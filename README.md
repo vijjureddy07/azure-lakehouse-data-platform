@@ -12,7 +12,7 @@ This repository demonstrates the engineering, modeling, data quality enforcement
 The project is structured into progressive modules:
 - **Module 1 (Complete):** Local PySpark Data Engineering foundations, strict schema enforcement, defect quarantine routing, referential integrity validation, financial Decimal precision, window functions, Spark SQL analytics, and partitioned Parquet storage.
 - **Module 2 (Complete & Deployment-Ready | Cloud Verification Pending):** Azure Cloud Ingestion Platform — Parameterized Azure Data Factory (ADF) master-child orchestration, Azure Data Lake Storage Gen2 (ADLS Gen2) with Hierarchical Namespace (HNS), Microsoft Entra System-Assigned Managed Identity, Azure RBAC, and dynamic landing path formatting.
-- **Module 3 (Not Started):** Azure Databricks, Delta Lake ACID Transactions, and Medallion Architecture (Bronze -> Silver -> Gold).
+- **Module 3 (Complete & Local-Verified | Databricks Cloud Pending):** Azure Databricks, Delta Lake ACID Transactions, and Medallion Architecture (Landing ➔ Bronze ➔ Silver ➔ Gold), Delta MERGE, Time Travel, Schema Enforcement/Evolution, and Unity Catalog 3-Level Namespace.
 
 ---
 
@@ -68,12 +68,36 @@ The project is structured into progressive modules:
 |             └── Container: lakehouse                                                               |
 |                 └── landing/retail/<dataset>/ingestion_date=<yyyy-MM-dd>/run_id=<run_id>/<file>    |
 +----------------------------------------------------------------------------------------------------+
+|                             MODULE 3: DATABRICKS DELTA LAKE MEDALLION LAKEHOUSE                    |
+|                                                                                                    |
+|  [ ADLS Gen2 Landing Zone ] (landing/retail/<dataset>/ingestion_date=*/run_id=*/*)                 |
+|             │                                                                                      |
+|             ▼ (Incremental Discovery Scanner + bronze._ingestion_audit)                            |
+|  [ Bronze Layer: retail_lakehouse.bronze ] (Delta Tables, Raw Strings + System Lineage Metadata)   |
+|             │                                                                                      |
+|             ▼ (Explicit Typing, Decimal Precision, Duplicate Classification, FK Anti-Joins)        |
+|  [ Silver Layer: retail_lakehouse.silver ] (Conformed Delta Tables + silver_quarantine_<dataset>)  |
+|             │ (Delta MERGE Upserts for Dimensions & Ingestion Rerun Idempotency)                   |
+|             │                                                                                      |
+|             ▼ (KPI Derivations & Performance Aggregates)                                           |
+|  [ Gold Layer: retail_lakehouse.gold ]                                                             |
+|             ├── gold_daily_sales_performance                                                       |
+|             ├── gold_monthly_revenue                                                               |
+|             ├── gold_revenue_by_store_region                                                       |
+|             ├── gold_category_revenue_performance                                                  |
+|             ├── gold_customer_spending_summary                                                     |
+|             └── gold_return_refund_performance                                                     |
++----------------------------------------------------------------------------------------------------+
 ```
 
 ### 🗺️ Cloud Roadmap
 - **Module 1:** Local PySpark processing and quality framework — **COMPLETE**
 - **Module 2:** Azure Cloud Ingestion Platform (ADF + ADLS Gen2) — **BUILD COMPLETE (Deployment-Ready)**
-- **Module 3:** Azure Databricks, Delta Lake ACID Transactions, and Medallion Architecture (Bronze -> Silver -> Gold) — **NOT STARTED**
+- **Module 3:** Azure Databricks, Delta Lake ACID Transactions, and Medallion Architecture (Bronze -> Silver -> Gold) — **COMPLETE (Local-Verified)**
+- **Module 4:** Advanced PySpark, Dimensional Modeling (Star Schema / Kimball), and Slowly Changing Dimensions (SCD Type 1 & 2) — **NOT STARTED**
+- **Module 5:** Pipeline Orchestration with Databricks Workflows, Azure Monitor, and Logging — **NOT STARTED**
+- **Module 6:** CI/CD Automation with GitHub Actions, Automated PySpark Testing, and Serving Layers — **NOT STARTED**
+
 - **Module 4:** Advanced PySpark, Dimensional Modeling (Star Schema / Kimball), and Slowly Changing Dimensions (SCD Type 1 & 2) — **NOT STARTED**
 - **Module 5:** Pipeline Orchestration with Databricks Workflows, Azure Monitor, and Logging — **NOT STARTED**
 - **Module 6:** CI/CD Automation with GitHub Actions, Automated PySpark Testing, and Serving Layers — **NOT STARTED**
@@ -176,12 +200,22 @@ python -m src.pipelines.local_batch_pipeline --scale small
 python -m src.pipelines.local_batch_pipeline --scale standard
 ```
 
-### 4. Run Automated Test Suite (Local & ADF Artifacts)
+### 4. Run the Delta Lake Medallion Pipeline (Module 3)
 ```bash
+# Run Delta Medallion batch pipeline on small scale (Landing -> Bronze -> Silver -> Gold)
+python -m src.pipelines.delta_medallion_pipeline --scale small
+
+# Run Delta Medallion batch pipeline on standard scale
+python -m src.pipelines.delta_medallion_pipeline --scale standard
+```
+
+### 5. Run Automated Test Suite (Modules 1, 2, and 3)
+```bash
+# Run full suite across all modules (38 tests)
 pytest -v
 ```
 
-### 5. Deploy & Verify Azure Cloud Ingestion (Module 2)
+### 6. Deploy & Verify Azure Cloud Ingestion (Module 2)
 ```bash
 # Option A: Local-Only Artifact Verification (No Azure credentials required)
 python scripts/verify_azure_deployment.py --local-only
@@ -197,6 +231,7 @@ python scripts/verify_azure_deployment.py \
   --container lakehouse \
   --run-id <PIPELINE_RUN_ID>
 ```
+
 
 ---
 

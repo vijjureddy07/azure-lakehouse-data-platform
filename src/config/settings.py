@@ -82,10 +82,30 @@ SCALE_PRESETS: dict[str, ScaleConfig] = {
 }
 
 
+DELTA_DIR = OUTPUT_DIR / "delta"
+BRONZE_DIR = DELTA_DIR / "bronze"
+SILVER_DIR = DELTA_DIR / "silver"
+GOLD_DIR = DELTA_DIR / "gold"
+DELTA_QUARANTINE_DIR = SILVER_DIR / "quarantine"
+LANDING_DIR = DATA_DIR / "landing"
+
+
+@dataclass
+class MedallionConfig:
+    """Unity Catalog and Medallion Lakehouse configuration."""
+    catalog: str = "retail_lakehouse"
+    bronze_schema: str = "bronze"
+    silver_schema: str = "silver"
+    gold_schema: str = "gold"
+    landing_root: Path = LANDING_DIR
+    delta_root: Path = DELTA_DIR
+    environment: str = "dev"
+
+
 @dataclass
 class SparkConfig:
     """Local Spark configuration."""
-    app_name: str = "AzureLakehouse_LocalModule1"
+    app_name: str = "AzureLakehouse_Platform"
     master: str = "local[*]"
     shuffle_partitions: int = 4
     driver_memory: str = "2g"
@@ -99,11 +119,17 @@ def ensure_directories():
         DATA_DIR,
         RAW_DATA_DIR,
         SAMPLE_DATA_DIR,
+        LANDING_DIR,
         OUTPUT_DIR,
         CLEANED_DIR,
         QUARANTINE_DIR,
         CURATED_DIR,
         METRICS_DIR,
         SQL_DIR,
+        DELTA_DIR,
+        BRONZE_DIR,
+        SILVER_DIR,
+        GOLD_DIR,
+        DELTA_QUARANTINE_DIR,
     ]:
         path.mkdir(parents=True, exist_ok=True)

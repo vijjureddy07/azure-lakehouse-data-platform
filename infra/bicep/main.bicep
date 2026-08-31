@@ -89,9 +89,62 @@ resource roleAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   }
 }
 
+// 5. Azure Databricks Workspace (Premium tier for Unity Catalog support)
+@description('Name of Azure Databricks workspace')
+param databricksWorkspaceName string = 'dbw-lakehouse-${environment}'
+
+resource databricksWorkspace 'Microsoft.Databricks/workspaces@2023-02-01' = {
+  name: databricksWorkspaceName
+  location: location
+  sku: {
+    name: 'premium'
+  }
+  properties: {
+    managedResourceGroupId: subscriptionResourceId('Microsoft.Resources/resourceGroups', 'rg-dbw-managed-${environment}-${uniqueStorageSuffix}')
+  }
+  tags: {
+    Environment: environment
+    Project: 'AzureLakehouseDataPlatform'
+    Module: 'Module3_Databricks_Delta_Medallion'
+  }
+}
+
+// 6. Azure Databricks Access Connector (Managed Identity for Unity Catalog storage credentials)
+@description('Name of Databricks Access Connector')
+param accessConnectorName string = 'dbx-access-connector-${environment}'
+
+resource databricksAccessConnector 'Microsoft.Databricks/accessConnectors@2023-05-01' = {
+  name: accessConnectorName
+  location: location
+  identity: {
+    type: 'SystemAssigned'
+  }
+  tags: {
+    Environment: environment
+    Project: 'AzureLakehouseDataPlatform'
+    Module: 'Module3_Databricks_Delta_Medallion'
+  }
+}
+
+// 7. Role Assignment: Storage Blob Data Contributor for Databricks Access Connector Managed Identity
+resource dbxAccessConnectorRoleAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(storageAccount.id, databricksAccessConnector.id, storageBlobDataContributorRoleId)
+  scope: storageAccount
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', storageBlobDataContributorRoleId)
+    principalId: databricksAccessConnector.identity.principalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
 output storageAccountId string = storageAccount.id
 output storageAccountNameOut string = storageAccount.name
 output dataFactoryId string = dataFactory.id
 output dataFactoryNameOut string = dataFactory.name
 output dataFactoryPrincipalId string = dataFactory.identity.principalId
 output containerNameOut string = lakehouseContainer.name
+output databricksWorkspaceId string = databricksWorkspace.id
+output databricksWorkspaceNameOut string = databricksWorkspace.name
+output databricksAccessConnectorId string = databricksAccessConnector.id
+output databricksAccessConnectorPrincipalId string = databricksAccessConnector.identity.principalId
+

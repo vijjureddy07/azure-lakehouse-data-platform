@@ -11,10 +11,31 @@
 | :--- | :--- | :--- | :--- |
 | **Module 1: Local PySpark & Quality Framework** | 🟢 **COMPLETE** | 🟢 **PASSED (15 Tests)** | ⏳ **NOT STUDIED / PENDING** |
 | **Module 2: ADF + ADLS Gen2 Cloud Ingestion** | 🟢 **COMPLETE (Deployment-Ready)**<br>*(Cloud Verification Pending)* | 🟢 **PASSED (8 Tests)** | ⏳ **NOT STUDIED / PENDING** |
-| **Module 3: Databricks + Delta Lake + Medallion** | ⏹️ NOT STARTED | ⏹️ NOT STARTED | ⏳ **NOT STUDIED / PENDING** |
+| **Module 3: Databricks + Delta Lake + Medallion** | 🟢 **COMPLETE (Local-Verified)**<br>*(Databricks Cloud Pending)* | 🟢 **PASSED (15 Tests)** | ⏳ **NOT STUDIED / PENDING** |
 | **Module 4: Advanced PySpark + Data Quality + Modeling** | ⏹️ NOT STARTED | ⏹️ NOT STARTED | ⏳ **NOT STUDIED / PENDING** |
 | **Module 5: Orchestration + Databricks Jobs + Alerts** | ⏹️ NOT STARTED | ⏹️ NOT STARTED | ⏳ **NOT STUDIED / PENDING** |
 | **Module 6: CI/CD + Serving Architecture** | ⏹️ NOT STARTED | ⏹️ NOT STARTED | ⏳ **NOT STUDIED / PENDING** |
+
+---
+
+## 🎯 Module 3 Detailed Objectives Checklist
+
+- [x] **Delta Lake Dependency & Engine:** Integrated `delta-spark==3.2.1` with Apache Spark 3.5.9, `DeltaSparkSessionExtension`, and `DeltaCatalog`.
+- [x] **Unity Catalog 3-Level Architecture:** Designed catalog DDL (`retail_lakehouse.bronze`, `retail_lakehouse.silver`, `retail_lakehouse.gold`) and setup notebook.
+- [x] **Landing File Discovery & Ingestion Audit:** Incremental directory scanner discovering dynamic ADF landing files (`landing/retail/<dataset>/ingestion_date=*/run_id=*/<file>`) and maintaining `bronze._ingestion_audit` Delta table to prevent duplicate ingestion.
+- [x] **Bronze Ingestion Layer:** Ingested all 8 retail datasets into Bronze Delta tables preserving exact raw strings with rich metadata (`_source_file`, `_source_path`, `_ingestion_date`, `_adf_run_id`, `_ingested_timestamp`).
+- [x] **Silver Conformance & Quality Quarantine:** Strongly-typed schemas (explicit `DateType`, `TimestampType`, `DecimalType` financial precision), whitespace trimming, casing normalization, and regex validation.
+- [x] **Window Deduplication & Defect Classification:** Classified duplicate primary keys and schema defects directly to `silver_quarantine_<dataset>` Delta tables.
+- [x] **Referential Integrity Anti-Joins:** Detected orphan foreign keys against validated upstream dimensions and routed to quarantine with reason codes (`ORPHAN_CUSTOMER_FK`, `ORPHAN_STORE_FK`, `ORPHAN_ORDER_FK`, `ORPHAN_PRODUCT_FK`, `ORPHAN_ORDER_ITEM_FK`).
+- [x] **Mathematical Reconciliation Invariant:** Verified across all 8 datasets that `bronze_count == silver_valid_count + quarantine_count`.
+- [x] **Idempotent Delta MERGE (Upsert):** Implemented ACID dimension and fact upserts (`upsert_customers`, `upsert_products`, `upsert_orders`) demonstrating insert, rerun idempotency, target row update, and unaffected row stability.
+- [x] **Gold Business KPI Analytical Aggregations:** Persisted 6 high-performance Delta aggregate tables (`gold_daily_sales_performance`, `gold_monthly_revenue`, `gold_revenue_by_store_region`, `gold_category_revenue_performance`, `gold_customer_spending_summary`, `gold_return_refund_performance`).
+- [x] **Delta Lake Internals & Core Features:** Demonstrator module and notebooks for transaction log parsing (`_delta_log/*.json`), table history (`DESCRIBE HISTORY`), time travel (`versionAsOf`, `timestampAsOf`), schema enforcement, and controlled schema evolution (`mergeSchema: true`).
+- [x] **Zero-Secret Cloud Security:** Updated Bicep and ARM templates to provision Azure Databricks workspace (Premium SKU) and Azure Databricks Access Connector (`Microsoft.Databricks/accessConnectors`) with `Storage Blob Data Contributor` role on ADLS Gen2.
+- [x] **Databricks Notebooks & SQL DDL:** Created 5 production-grade Databricks notebooks and 2 ANSI SQL scripts in `databricks/`.
+- [x] **Automated Test Suite & Linting:** Added comprehensive unit and integration tests (totaling 38 passing tests in repository) and verified 0 errors with Ruff linter.
+- [x] **Module 3 Study Guide & Documentation:** Authored `docs/06_DATABRICKS_DELTA_MEDALLION.md` and updated `README.md`, `00_LEARNING_INDEX.md`, `IMPLEMENTATION_MAP.md`, and `INTERVIEW_QA.md`.
+
 
 ---
 

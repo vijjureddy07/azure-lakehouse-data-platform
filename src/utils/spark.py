@@ -74,12 +74,20 @@ def get_spark_session(config: SparkConfig | None = None) -> SparkSession:
         .config("spark.sql.session.timeZone", cfg.timezone)
         .config("spark.driver.memory", cfg.driver_memory)
         .config("spark.sql.adaptive.enabled", "true")
+        .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
+        .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog")
         .config("spark.driver.extraJavaOptions", f"-Duser.timezone={cfg.timezone}")
         .config("spark.executor.extraJavaOptions", f"-Duser.timezone={cfg.timezone}")
         .config("spark.ui.enabled", "false")  # Disable web UI in local test/batch runs to avoid port bind conflicts
     )
 
-    spark = builder.getOrCreate()
+    try:
+        import delta
+
+        spark = delta.configure_spark_with_delta_pip(builder).getOrCreate()
+    except (ImportError, Exception):  # noqa: BLE001
+        spark = builder.getOrCreate()
+
     spark.sparkContext.setLogLevel(cfg.log_level)
     return spark
 

@@ -126,3 +126,65 @@ When a new dataset needs to be onboarded, we append a JSON object to the metadat
 2. **Decoupling Transport from Compute:** Ingestion (ADF Copy Activity) is lightweight, fast, and serverless. Heavy computation, schema enforcement, deduplication, and transformations are offloaded to distributed compute engines (Spark / Delta Lake in Module 3).
 3. **Reprocessability:** If downstream transformation logic contains a bug or business rules change, having unaltered raw landing data partitioned by `ingestion_date` and `run_id` allows backfilling without requesting re-exports from source providers.
 
+---
+
+## 3. Azure Databricks, Delta Lake & Medallion Architecture (Module 3)
+
+### Q18: What is the architectural difference between Landing files in ADLS Gen2 and Bronze Delta tables?
+**Answer:**  
+- **Landing Files:** Raw, immutable files (CSV, JSON) sitting in the storage account landing zone (`landing/retail/<dataset>/ingestion_date=*/run_id=*/*`) exactly as emitted by upstream systems. They lack ACID transactions, schema enforcement, and query optimization.
+- **Bronze Delta Tables:** Structured Delta Lake tables (`output/delta/bronze/<dataset>/` or `retail_lakehouse.bronze.<dataset>`) that ingest the raw files verbatim (as strings) while appending rich system lineage metadata columns (`_source_file`, `_source_path`, `_ingestion_date`, `_adf_run_id`, `_ingested_timestamp`). Bronze provides ACID transaction isolation, fast columnar query scans, and an ingestion audit trail without altering raw column values.
+
+---
+
+### Q19: How does the Delta Lake transaction log (`_delta_log`) guarantee ACID properties?
+**Answer:**  
+Delta Lake maintains an ordered sequence of JSON commit files (`00000000000000000000.json`, etc.) in the `_delta_log/` directory:
+1. **Atomicity:** When a transaction modifies a table, it writes new Parquet data files and attempts to commit a single JSON log entry containing `add` or `remove` file actions. If any part of the write fails, the commit JSON is not created, meaning readers will never see the partial files.
+2. **Consistency:** Readers scan the transaction log to construct the table state. State transitions are strictly governed by schema invariants and constraints.
+3. **Isolation (Snapshot Isolation):** Readers construct a snapshot of the table at the exact transaction log version active when their query began, unaffected by concurrent writes.
+4. **Durability:** Once the commit file is written to durable cloud object storage (ADLS Gen2), the transaction is permanent. Checkpoint Parquet files are generated every 10 commits to optimize snapshot reconstruction.
+
+---
+
+### Q20: How does Delta Lake implement time travel, and what are its production use cases?
+**Answer:**  
+Because Delta Lake's transaction log tracks every file added and removed across every commit without immediately deleting underlying Parquet files, users can query past snapshots:
+```sql
+-- Query by version
+SELECT * FROM retail_lakehouse.silver.customers VERSION AS OF 2;
+
+-- Query by timestamp
+SELECT * FROM retail_lakehouse.silver.customers TIMESTAMP AS OF '2026-08-31 10:00:00';
+```
+**Production Use Cases:**
+1. **Auditing & Reproducibility:** Re-running financial or ML models against the exact data state from the prior month or quarter.
+2. **Rollback & Disaster Recovery:** Restoring a table after an accidental write or bad data deployment using `RESTORE TABLE ... TO VERSION AS OF N`.
+3. **Debugging & Root Cause Analysis:** Comparing data before and after an ETL job failure to isolate defective incoming records.
+
+---
+
+### Q21: Explain the difference between Delta Lake Schema Enforcement and Schema Evolution.
+**Answer:**  
+- **Schema Enforcement (Schema Validation):** The default safety mechanism in Delta Lake. If an incoming DataFrame has columns not defined in the target table schema or has conflicting data types, Delta throws an `AnalysisException` and rejects the write. This prevents accidental schema corruption and column pollution.
+- **Schema Evolution:** Explicitly opted-in capability allowing Delta to alter its schema dynamically during a write operation. Enabled by setting `.option("mergeSchema", "true")` during an append/overwrite or `spark.databricks.delta.schema.autoMerge.enabled = true`. Newly added columns in the DataFrame are automatically appended to the table schema with null values populated for historical records.
+
+---
+
+### Q22: How does Delta MERGE provide idempotency compared to simple APPEND or OVERWRITE?
+**Answer:**  
+- **Append:** Adds all incoming rows unconditionally. Rerunning a pipeline causes duplicated records.
+- **Overwrite:** Replaces the entire table or partition. While idempotent, it cannot perform row-level incremental updates without rewriting the whole partition.
+- **Delta MERGE (Upsert):** Evaluates a match condition on primary keys (`ON target.id = source.id`). When matched, it updates existing records in place; when not matched, it inserts new records; and unreferenced records remain untouched. Rerunning the exact same source dataset on an already updated table matches all keys, updates with identical values, inserts 0 new rows, and produces 0 duplicates.
+
+---
+
+### Q23: How does Unity Catalog enable enterprise data governance with zero stored credentials?
+**Answer:**  
+Unity Catalog introduces a central 3-level namespace (`<catalog>.<schema>.<table>`) across all Databricks workspaces. Rather than embedding storage access keys or SAS tokens in notebooks or using legacy DBFS mounts:
+1. An **Azure Databricks Access Connector** is deployed with a System-Assigned Managed Identity in Microsoft Entra ID.
+2. The Access Connector is granted the Azure RBAC role **Storage Blob Data Contributor** on ADLS Gen2.
+3. In Unity Catalog, an administrator creates a **Storage Credential** pointing to the Access Connector resource ID, and an **External Location** pointing to the ADLS Gen2 container URL (`abfss://...`).
+4. Data engineers and analysts query tables using standard ANSI SQL permissions (`GRANT SELECT ON TABLE...`) without having direct storage keys or seeing cloud connection strings.
+
+

@@ -483,15 +483,21 @@ class RetailDataGenerator:
             f.writelines(json.dumps(row) + "\n" for row in rows)
 
 
+def generate_all_datasets(config: ScaleConfig, output_dir: Path | None = None) -> dict[str, int]:
+    """Generate all datasets for a given ScaleConfig instance."""
+    ensure_directories()
+    generator = RetailDataGenerator(config, output_dir=output_dir)
+    return generator.generate_all()
+
+
 def generate_retail_dataset(scale: str = "small", output_dir: Path | None = None) -> dict[str, int]:
     """Entrypoint function to generate dataset for a given scale."""
     config = SCALE_PRESETS.get(scale.lower())
     if not config:
         raise ValueError(f"Unknown scale '{scale}'. Available options: {list(SCALE_PRESETS.keys())}")
 
-    ensure_directories()
-    generator = RetailDataGenerator(config, output_dir=output_dir)
-    return generator.generate_all()
+    return generate_all_datasets(config, output_dir=output_dir)
+
 
 
 if __name__ == "__main__":

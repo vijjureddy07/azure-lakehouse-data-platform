@@ -73,7 +73,9 @@ logs/
 
 # Data and outputs
 data/raw/
+data/landing/
 output/
+
 !data/sample/
 !data/sample/*
 !output/.gitkeep
