@@ -106,14 +106,31 @@ Never commit storage account access keys, SAS tokens, passwords, or connection s
 
 ### PRINCIPLES OF RAW CLOUD INGESTION
 1. **Fidelity Preservation:** Raw files must land **unchanged** in their original format (CSV stays CSV, JSON stays JSON Lines). No parsing, data type casting, or cleansing occurs during landing.
-2. **Immutable Audit Trail:** Placing `@pipeline().RunId` in the storage path ensures every pipeline run creates an isolated, auditable folder snapshot.
-3. **Decoupling Landing from Lakehouse (Module 2 vs Module 3):**
+2. **Immutable Audit Trail:** Placing `@pipeline().RunId` in the storage path ensures every pipeline run creates an isolated, auditable folder snapshot:
+   ```
+   landing/retail/<dataset>/ingestion_date=<yyyy-MM-dd>/run_id=<RUN_ID>/<file>
+   ```
+3. **Byte-for-Byte SHA-256 Verification:** The live verifier (`scripts/verify_azure_deployment.py`) downloads landed files from the specific run and verifies that `source_bytes == landed_bytes` via SHA-256 checksums.
+4. **Decoupling Landing from Lakehouse (Module 2 vs Module 3):**
    - *Module 2 (Landing):* Acquires external files and stores raw byte streams in ADLS Gen2.
    - *Module 3 (Bronze / Silver / Gold):* Reads landed files into Apache Spark / Delta Lake to apply schema enforcement, deduplication, and ACID transactions.
 
 ---
 
-## 6. Interview Questions & Expected Answers
+## 6. Infrastructure as Code & Automated Deployment
+
+### CANONICAL BICEP PROVISIONING & DETERMINISTIC STORAGE NAMING
+- Azure Storage Account names must be globally unique across all Azure tenants.
+- [main.bicep](../infra/bicep/main.bicep) generates a deterministic valid name if omitted: `take('stlakehouse${environment}${uniqueString(resourceGroup().id)}', 24)`.
+- The single canonical provisioning script [deploy_azure_resources.sh](../scripts/deploy_azure_resources.sh) deploys Bicep and dynamically extracts output values.
+
+### CLI ARTIFACT DEPLOYMENT & PAYLOAD EXTRACTION
+- ADF JSON files in `adf/` are kept in readable ARM resource wrapper formats for GitHub review.
+- [deploy_adf_artifacts.py](../scripts/deploy_adf_artifacts.py) extracts the inner `.properties` dictionary to temporary files before passing to Azure CLI (`az datafactory linked-service create --properties`, `dataset create --properties`, `pipeline create --pipeline`), preventing ARM wrapper deployment errors.
+
+---
+
+## 7. Interview Questions & Expected Answers
 
 ### INTERVIEW QUESTION 1
 > "What is the architectural advantage of enabling Hierarchical Namespace (HNS) in ADLS Gen2 compared to standard Azure Blob storage for data engineering pipelines?"
@@ -136,3 +153,4 @@ Never commit storage account access keys, SAS tokens, passwords, or connection s
 
 ### EXPECTED ANSWER
 > "Storage Account Keys provide unrestricted root access to the entire storage account and cannot be scoped or audited by identity. SAS tokens expire and require manual rotation and secure secret storage (e.g. in Azure Key Vault). System-Assigned Managed Identity leverages Microsoft Entra ID to authenticate ADF directly to ADLS Gen2 with zero stored credentials. We grant ADF the least-privilege role 'Storage Blob Data Contributor' over the storage account scope. Microsoft handles token acquisition, rotation, and lifecycle management automatically, eliminating credential leakage risk."
+

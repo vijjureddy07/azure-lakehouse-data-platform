@@ -183,11 +183,19 @@ pytest -v
 
 ### 5. Deploy & Verify Azure Cloud Ingestion (Module 2)
 ```bash
-# Provision Azure Resource Group, ADLS Gen2 (HNS), ADF (Managed Identity), and RBAC:
+# Option A: Local-Only Artifact Verification (No Azure credentials required)
+python scripts/verify_azure_deployment.py --local-only
+
+# Option B: End-to-End Azure Cloud Deployment (Bicep IaC + ADF Payload Deployment + Live Verification)
 ./scripts/deploy_azure_resources.sh
 
-# Verify Azure deployment and landed ADLS Gen2 landing files:
-python scripts/verify_azure_deployment.py --storage-account stlakehousedev --data-factory adf-lakehouse-dev
+# Option C: Manual Live Cloud Verification for a Specific Pipeline Run
+python scripts/verify_azure_deployment.py \
+  --resource-group rg-lakehouse-dev-eastus \
+  --storage-account <DEPLOYED_STORAGE_ACCOUNT> \
+  --data-factory adf-lakehouse-dev \
+  --container lakehouse \
+  --run-id <PIPELINE_RUN_ID>
 ```
 
 ---

@@ -9,8 +9,8 @@ param location string = resourceGroup().location
 ])
 param environment string = 'dev'
 
-@description('Name of ADLS Gen2 storage account (must be globally unique, lowercase alphanumeric)')
-param storageAccountName string = 'stlakehouse${environment}'
+@description('Name of ADLS Gen2 storage account (must be lowercase alphanumeric, <= 24 chars). If empty, generates unique name.')
+param storageAccountName string = ''
 
 @description('Name of Azure Data Factory resource')
 param dataFactoryName string = 'adf-lakehouse-${environment}'
@@ -18,9 +18,12 @@ param dataFactoryName string = 'adf-lakehouse-${environment}'
 @description('Name of the primary ADLS Gen2 filesystem container')
 param containerName string = 'lakehouse'
 
+var uniqueStorageSuffix = uniqueString(resourceGroup().id)
+var resolvedStorageAccountName = !empty(storageAccountName) ? toLower(storageAccountName) : take('stlakehouse${environment}${uniqueStorageSuffix}', 24)
+
 // 1. ADLS Gen2 Storage Account with Hierarchical Namespace (HNS)
 resource storageAccount 'Microsoft.Storage/storageAccounts@2023-01-01' = {
-  name: storageAccountName
+  name: resolvedStorageAccountName
   location: location
   sku: {
     name: 'Standard_LRS'

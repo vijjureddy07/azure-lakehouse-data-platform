@@ -26,9 +26,9 @@
     },
     "storageAccountName": {
       "type": "string",
-      "defaultValue": "stlakehousedev",
+      "defaultValue": "",
       "metadata": {
-        "description": "Name of ADLS Gen2 storage account (must be lowercase alphanumeric, globally unique)"
+        "description": "Name of ADLS Gen2 storage account (lowercase alphanumeric, <= 24 chars). If empty, a unique name is generated deterministically."
       }
     },
     "dataFactoryName": {
@@ -47,14 +47,15 @@
     }
   },
   "variables": {
+    "resolvedStorageAccountName": "[if(empty(parameters('storageAccountName')), take(toLower(concat('stlakehouse', parameters('environment'), uniqueString(resourceGroup().id))), 24), toLower(parameters('storageAccountName')))]",
     "storageBlobDataContributorRoleId": "ba92f5b4-2d11-453d-a403-e96b0029c9fe",
-    "roleAssignmentGuid": "[guid(resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName')), resourceId('Microsoft.DataFactory/factories', parameters('dataFactoryName')), variables('storageBlobDataContributorRoleId'))]"
+    "roleAssignmentGuid": "[guid(resourceId('Microsoft.Storage/storageAccounts', variables('resolvedStorageAccountName')), resourceId('Microsoft.DataFactory/factories', parameters('dataFactoryName')), variables('storageBlobDataContributorRoleId'))]"
   },
   "resources": [
     {
       "type": "Microsoft.Storage/storageAccounts",
       "apiVersion": "2023-01-01",
-      "name": "[parameters('storageAccountName')]",
+      "name": "[variables('resolvedStorageAccountName')]",
       "location": "[parameters('location')]",
       "sku": {
         "name": "Standard_LRS"
