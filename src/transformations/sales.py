@@ -125,38 +125,57 @@ def build_curated_sales(
         .withColumn("order_day", F.dayofmonth(F.col("order_date")).cast(IntegerType()))
     )
 
-    # 6. Window Functions
-    # Window 1: Customer Order Sequence (ROW_NUMBER)
-    cust_order_window = Window.partitionBy("customer_id").orderBy(
-        F.col("order_timestamp").asc(),
-        F.col("order_id").asc()
+    # 6. Order-Grain Window Functions
+    # Calculate customer order sequence, purchase intervals, and cumulative spend at UNIQUE ORDER GRAIN
+    # to avoid incorrect duplicate sequencing or partial intra-order spend accumulation on line items.
+    order_grain_df = financials_df.groupBy(
+        "customer_id", "order_id", "order_timestamp", "order_date"
+    ).agg(
+        F.sum("net_sales").alias("order_net_sales")
     )
-    # Window 2: Customer Running Cumulative Spend (SUM over window frame)
-    cust_running_window = (
+
+    order_window = Window.partitionBy("customer_id").orderBy(
+        F.col("order_timestamp").asc(),
+        F.col("order_id").asc(),
+    )
+    order_running_window = (
         Window.partitionBy("customer_id")
-        .orderBy(F.col("order_timestamp").asc(), F.col("order_item_id").asc())
+        .orderBy(F.col("order_timestamp").asc(), F.col("order_id").asc())
         .rowsBetween(Window.unboundedPreceding, Window.currentRow)
     )
-    # Window 3: Days Since Previous Order (LAG)
-    cust_lag_window = Window.partitionBy("customer_id").orderBy(F.col("order_date").asc(), F.col("order_id").asc())
 
-    # Window 4: Product Category Revenue Rank (DENSE_RANK)
-    # First compute total revenue per product in category
+    order_metrics_df = (
+        order_grain_df.withColumn("customer_order_sequence", F.row_number().over(order_window))
+        .withColumn("prev_order_date", F.lag("order_date", 1).over(order_window))
+        .withColumn("days_since_prior_order", F.datediff(F.col("order_date"), F.col("prev_order_date")))
+        .withColumn(
+            "customer_running_spend",
+            F.sum("order_net_sales").over(order_running_window).cast(DecimalType(14, 2)),
+        )
+        .select(
+            "customer_id",
+            "order_id",
+            "customer_order_sequence",
+            "days_since_prior_order",
+            "customer_running_spend",
+        )
+    )
+
+    # 7. Category Product Ranking Window (DENSE_RANK per category)
     product_totals = financials_df.groupBy("category", "product_id").agg(
         F.sum("net_sales").alias("total_prod_cat_sales")
     )
     cat_rank_window = Window.partitionBy("category").orderBy(F.col("total_prod_cat_sales").desc())
     ranked_products = product_totals.withColumn("category_product_rank", F.dense_rank().over(cat_rank_window))
 
-    with_windows = (
-        financials_df.withColumn("customer_order_sequence", F.row_number().over(cust_order_window))
-        .withColumn("customer_running_spend", F.sum("net_sales").over(cust_running_window).cast(DecimalType(14, 2)))
-        .withColumn("prev_order_date", F.lag("order_date", 1).over(cust_lag_window))
-        .withColumn("days_since_prior_order", F.datediff(F.col("order_date"), F.col("prev_order_date")))
-        .drop("prev_order_date")
+    # 8. Assemble Curated Dataset: Join order metrics and product rankings back onto line items
+    with_order_metrics = financials_df.join(
+        order_metrics_df,
+        on=["customer_id", "order_id"],
+        how="inner",
     )
 
-    curated_df = with_windows.join(
+    curated_df = with_order_metrics.join(
         ranked_products.select("category", "product_id", "category_product_rank"),
         on=["category", "product_id"],
         how="left",

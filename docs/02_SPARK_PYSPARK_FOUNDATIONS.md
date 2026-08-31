@@ -42,7 +42,7 @@
 The unified entry point for PySpark applications (introduced in Spark 2.0). It encapsulates `SparkContext`, `SQLContext`, and `HiveContext` under a single, cohesive API.
 
 ### EXACT FILE / CONFIGURATION
-- [spark.py](file:///Users/vijjureddy/Job%20Switch%20Projects/azure-lakehouse-data-platform/src/utils/spark.py#L38-L70) (`get_spark_session`)
+- [spark.py](../src/utils/spark.py) (`get_spark_session`)
 
 ```python
 spark = (

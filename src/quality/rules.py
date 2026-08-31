@@ -85,6 +85,29 @@ def find_orphans(
     return child_df.join(parent_df, child_df[child_fk] == parent_df[parent_pk], "left_anti")
 
 
+class DataQualityReconciliationError(ValueError):
+    """Raised when source_row_count does not equal valid_row_count + quarantine_row_count."""
+
+
+def validate_reconciliation(metrics_list: list[DatasetQualityMetric]) -> None:
+    """
+    Enforce the fundamental data quality reconciliation invariant:
+    source_row_count == valid_row_count + quarantine_row_count
+
+    Raises:
+        DataQualityReconciliationError: If any dataset's counts do not reconcile.
+    """
+    for m in metrics_list:
+        expected_source = m.valid_row_count + m.quarantine_row_count
+        if m.source_row_count != expected_source:
+            raise DataQualityReconciliationError(
+                f"Data quality reconciliation failed for dataset '{m.dataset_name}': "
+                f"source_row_count={m.source_row_count} != "
+                f"valid_row_count={m.valid_row_count} + quarantine_row_count={m.quarantine_row_count} "
+                f"(sum={expected_source})."
+            )
+
+
 def metrics_to_dataframe(spark: SparkSession, metrics_list: list[DatasetQualityMetric]) -> DataFrame:
     """Convert in-memory metrics list into a PySpark DataFrame adhering to QUALITY_METRICS_SCHEMA."""
     if not metrics_list:

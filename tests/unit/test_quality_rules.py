@@ -1,8 +1,12 @@
-"""
-Unit tests for data quality rules, orphan finder, and metrics dataframe formatting.
-"""
+import pytest
 
-from src.quality.rules import DatasetQualityMetric, find_orphans, metrics_to_dataframe
+from src.quality.rules import (
+    DataQualityReconciliationError,
+    DatasetQualityMetric,
+    find_orphans,
+    metrics_to_dataframe,
+    validate_reconciliation,
+)
 
 
 def test_find_orphans_left_anti_join(spark):
@@ -36,3 +40,28 @@ def test_metrics_to_dataframe(spark):
     assert df.count() == 2
     assert "source_row_count" in df.columns
     assert "quarantine_row_count" in df.columns
+
+
+def test_validate_reconciliation_success():
+    """Verify validate_reconciliation passes when source_row_count == valid + quarantine."""
+    valid_metrics = [
+        DatasetQualityMetric("customers", source_row_count=100, valid_row_count=95, quarantine_row_count=5),
+        DatasetQualityMetric("orders", source_row_count=500, valid_row_count=480, quarantine_row_count=20),
+    ]
+    # Should execute without raising any exception
+    validate_reconciliation(valid_metrics)
+
+
+def test_validate_reconciliation_mismatch_raises_error():
+    """Verify validate_reconciliation raises DataQualityReconciliationError on mismatch."""
+    mismatched_metrics = [
+        DatasetQualityMetric("customers", source_row_count=100, valid_row_count=95, quarantine_row_count=5),
+        DatasetQualityMetric("orders", source_row_count=500, valid_row_count=450, quarantine_row_count=20),  # Sum is 470 != 500
+    ]
+    with pytest.raises(DataQualityReconciliationError) as exc_info:
+        validate_reconciliation(mismatched_metrics)
+
+    assert "orders" in str(exc_info.value)
+    assert "source_row_count=500" in str(exc_info.value)
+    assert "valid_row_count=450" in str(exc_info.value)
+    assert "quarantine_row_count=20" in str(exc_info.value)

@@ -22,6 +22,17 @@ def test_end_to_end_local_batch_pipeline():
         assert result["status"] == "SUCCESS"
         assert len(result["metrics"]) == 8
 
+        # Explicitly verify reconciliation for every returned dataset metric
+        for metric_dict in result["metrics"]:
+            dataset_name = metric_dict["dataset_name"]
+            source_count = metric_dict["source_row_count"]
+            valid_count = metric_dict["valid_row_count"]
+            quarantine_count = metric_dict["quarantine_row_count"]
+            assert source_count == valid_count + quarantine_count, (
+                f"Reconciliation failure in pipeline execution for dataset '{dataset_name}': "
+                f"{source_count} != {valid_count} + {quarantine_count}"
+            )
+
         # Verify Parquet outputs exist
         out_path = Path(tmp_output_dir)
         assert (out_path / "cleaned" / "customers").exists()

@@ -30,7 +30,11 @@ from src.config.settings import (
     ensure_directories,
 )
 from src.data_generation.generate_retail_data import generate_retail_dataset
-from src.quality.rules import DatasetQualityMetric, metrics_to_dataframe
+from src.quality.rules import (
+    DatasetQualityMetric,
+    metrics_to_dataframe,
+    validate_reconciliation,
+)
 from src.schemas.retail_schemas import (
     RAW_CUSTOMERS_SCHEMA,
     RAW_EMPLOYEES_SCHEMA,
@@ -139,8 +143,10 @@ class LocalBatchPipeline:
             logger.info("\n--- STAGE 8: REGISTERING SPARK SQL VIEWS & EXECUTING ANALYTICS ---")
             self._execute_spark_sql_analytics(clean_dfs, curated_sales_df)
 
-            # Stage 9: Quality Metrics Consolidation
+            # Stage 9: Quality Metrics Consolidation & Reconciliation Validation
             logger.info("\n--- STAGE 9: DATA QUALITY AUDIT RECONCILIATION ---")
+            validate_reconciliation(self.metrics)
+            logger.info("Reconciliation validation passed for all %d datasets.", len(self.metrics))
             metrics_df = metrics_to_dataframe(self.spark, self.metrics)
             metrics_path = str(self.metrics_dir / "quality_summary")
             metrics_df.write.mode("overwrite").parquet(metrics_path)

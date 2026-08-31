@@ -19,7 +19,7 @@ Rather than assuming perfect data, Module 1 implements an enterprise **Data Qual
 
 ## 2. Injected Defect Catalog & Handling
 
-All defects are generated deterministically in [generate_retail_data.py](file:///Users/vijjureddy/Job%20Switch%20Projects/azure-lakehouse-data-platform/src/data_generation/generate_retail_data.py) using a fixed seed (`seed=42`).
+All defects are generated deterministically in [generate_retail_data.py](../src/data_generation/generate_retail_data.py) using a fixed seed (`seed=42`).
 
 | Injected Defect | Target Dataset & Columns | Injection Mechanism | Detection & Quarantine Rule |
 | :--- | :--- | :--- | :--- |
@@ -40,7 +40,7 @@ All defects are generated deterministically in [generate_retail_data.py](file://
 
 ## 3. Standardized Quarantine Schema
 
-Every quarantined record is transformed into a uniform schema defined in [retail_schemas.py](file:///Users/vijjureddy/Job%20Switch%20Projects/azure-lakehouse-data-platform/src/schemas/retail_schemas.py#L79-L87):
+Every quarantined record is transformed into a uniform schema defined in [retail_schemas.py](../src/schemas/retail_schemas.py):
 
 ```python
 QUARANTINE_SCHEMA = StructType([
@@ -53,7 +53,7 @@ QUARANTINE_SCHEMA = StructType([
 ```
 
 ### Quarantine Serialization Implementation
-In [rules.py](file:///Users/vijjureddy/Job%20Switch%20Projects/azure-lakehouse-data-platform/src/quality/rules.py#L42-L65):
+In [rules.py](../src/quality/rules.py):
 ```python
 def format_as_quarantine(df, record_id_col, source_dataset, rejection_reason_col):
     cols_to_json = [c for c in df.columns if c != rejection_reason_col]

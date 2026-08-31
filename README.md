@@ -91,7 +91,7 @@ The pipeline never silently drops data. Instead, it classifies each record, rout
 ### Handled Defect Types:
 1. **Null Mandatory Fields:** Empty or missing primary/business keys.
 2. **Duplicate Keys:** Multiple records sharing the same primary key (deduplicated via `ROW_NUMBER()`).
-3. **Invalid Email Formats:** Malformed email strings failing RFC-compliant regex checks.
+3. **Invalid Email Formats:** Malformed email strings failing email format validation using a practical regex.
 4. **Malformed Dates / Timestamps:** Unparseable date strings (e.g. `'2023-99-99'`).
 5. **Non-Positive Prices & Quantities:** Items with quantity $\le 0$ or price $< 0$.
 6. **Referential Integrity Violations:** Orphan orders, items, payments, employees, and returns referencing non-existent primary keys.
@@ -200,7 +200,7 @@ Writing curated_sales to Parquet (Partitioned by order_year, order_month)...
 >>> Executing Spark SQL: daily_monthly_revenue.sql
 >>> Executing Spark SQL: top_products_by_revenue.sql
 >>> Executing Spark SQL: revenue_by_region.sql
->>> Executing Spark SQL: average_order_value_and_returns.sql
+>>> Executing Spark SQL: category_returns_profitability.sql
 
 --- STAGE 9: DATA QUALITY AUDIT RECONCILIATION ---
 +-------------+----------------+---------------+--------------------+---------------+---------------------+-------------------------+
@@ -227,11 +227,11 @@ PIPELINE EXECUTION COMPLETED SUCCESSFULLY
 
 Comprehensive Data Engineering study guides and interview preparation materials are documented in the `docs/` directory:
 
-- [docs/00_LEARNING_INDEX.md](file:///Users/vijjureddy/Job%20Switch%20Projects/azure-lakehouse-data-platform/docs/00_LEARNING_INDEX.md): Curriculum roadmap and module status.
-- [docs/01_DATA_ENGINEERING_FOUNDATIONS.md](file:///Users/vijjureddy/Job%20Switch%20Projects/azure-lakehouse-data-platform/docs/01_DATA_ENGINEERING_FOUNDATIONS.md): Core data engineering concepts (ETL/ELT, idempotency, batch processing, schemas).
-- [docs/02_SPARK_PYSPARK_FOUNDATIONS.md](file:///Users/vijjureddy/Job%20Switch%20Projects/azure-lakehouse-data-platform/docs/02_SPARK_PYSPARK_FOUNDATIONS.md): Apache Spark architecture, lazy evaluation, DAGs, narrow vs wide transformations, shuffling, and Parquet.
-- [docs/03_DATA_QUALITY.md](file:///Users/vijjureddy/Job%20Switch%20Projects/azure-lakehouse-data-platform/docs/03_DATA_QUALITY.md): Quality rules, defect injection catalog, and quarantine architecture.
-- [docs/04_SPARK_SQL_WINDOWS.md](file:///Users/vijjureddy/Job%20Switch%20Projects/azure-lakehouse-data-platform/docs/04_SPARK_SQL_WINDOWS.md): Spark SQL temporary views and PySpark window functions (`ROW_NUMBER`, `DENSE_RANK`, `LAG`, `SUM`).
-- [docs/IMPLEMENTATION_MAP.md](file:///Users/vijjureddy/Job%20Switch%20Projects/azure-lakehouse-data-platform/docs/IMPLEMENTATION_MAP.md): Skill-to-code traceability matrix.
-- [docs/INTERVIEW_QA.md](file:///Users/vijjureddy/Job%20Switch%20Projects/azure-lakehouse-data-platform/docs/INTERVIEW_QA.md): Real-world interview questions and concise technical answers.
-- [docs/PROGRESS.md](file:///Users/vijjureddy/Job%20Switch%20Projects/azure-lakehouse-data-platform/docs/PROGRESS.md): Detailed progress tracker.
+- [docs/00_LEARNING_INDEX.md](docs/00_LEARNING_INDEX.md): Curriculum roadmap and module status.
+- [docs/01_DATA_ENGINEERING_FOUNDATIONS.md](docs/01_DATA_ENGINEERING_FOUNDATIONS.md): Core data engineering concepts (ETL/ELT, idempotency, batch processing, schemas).
+- [docs/02_SPARK_PYSPARK_FOUNDATIONS.md](docs/02_SPARK_PYSPARK_FOUNDATIONS.md): Apache Spark architecture, lazy evaluation, DAGs, narrow vs wide transformations, shuffling, and Parquet.
+- [docs/03_DATA_QUALITY.md](docs/03_DATA_QUALITY.md): Quality rules, defect injection catalog, and quarantine architecture.
+- [docs/04_SPARK_SQL_WINDOWS.md](docs/04_SPARK_SQL_WINDOWS.md): Spark SQL temporary views and PySpark window functions (`ROW_NUMBER`, `DENSE_RANK`, `LAG`, `SUM`).
+- [docs/IMPLEMENTATION_MAP.md](docs/IMPLEMENTATION_MAP.md): Skill-to-code traceability matrix.
+- [docs/INTERVIEW_QA.md](docs/INTERVIEW_QA.md): Real-world interview questions and concise technical answers.
+- [docs/PROGRESS.md](docs/PROGRESS.md): Detailed progress tracker.

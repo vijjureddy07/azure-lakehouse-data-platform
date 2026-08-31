@@ -20,10 +20,10 @@
 
 ## 📚 Module 1 Documentation Guide
 
-- [01_DATA_ENGINEERING_FOUNDATIONS.md](file:///Users/vijjureddy/Job%20Switch%20Projects/azure-lakehouse-data-platform/docs/01_DATA_ENGINEERING_FOUNDATIONS.md): Core data engineering paradigms, ETL vs ELT, batch processing, idempotency, and full refresh vs incremental loads.
-- [02_SPARK_PYSPARK_FOUNDATIONS.md](file:///Users/vijjureddy/Job%20Switch%20Projects/azure-lakehouse-data-platform/docs/02_SPARK_PYSPARK_FOUNDATIONS.md): Apache Spark architecture (Driver/Executor), Lazy Evaluation, DAG execution, Transformations vs Actions, Wide vs Narrow dependencies, Shuffling, and Partitioning.
-- [03_DATA_QUALITY.md](file:///Users/vijjureddy/Job%20Switch%20Projects/azure-lakehouse-data-platform/docs/03_DATA_QUALITY.md): Intentional defect injection, schema enforcement, business key validation, referential integrity via anti-joins, standardized quarantine routing, and reconciliation metrics.
-- [04_SPARK_SQL_WINDOWS.md](file:///Users/vijjureddy/Job%20Switch%20Projects/azure-lakehouse-data-platform/docs/04_SPARK_SQL_WINDOWS.md): Temporary views, Spark SQL analytics, and Window Functions (`ROW_NUMBER`, `DENSE_RANK`, `LAG`, running sums).
-- [IMPLEMENTATION_MAP.md](file:///Users/vijjureddy/Job%20Switch%20Projects/azure-lakehouse-data-platform/docs/IMPLEMENTATION_MAP.md): Skill-to-code mapping tracing requirements from domain to implementation functions and Parquet outputs.
-- [INTERVIEW_QA.md](file:///Users/vijjureddy/Job%20Switch%20Projects/azure-lakehouse-data-platform/docs/INTERVIEW_QA.md): Comprehensive interview questions and expected technical answers covering all Module 1 topics.
-- [PROGRESS.md](file:///Users/vijjureddy/Job%20Switch%20Projects/azure-lakehouse-data-platform/docs/PROGRESS.md): Detailed tracking table for build, test, and study milestones.
+- [01_DATA_ENGINEERING_FOUNDATIONS.md](01_DATA_ENGINEERING_FOUNDATIONS.md): Core data engineering paradigms, ETL vs ELT, batch processing, idempotency, and full refresh vs incremental loads.
+- [02_SPARK_PYSPARK_FOUNDATIONS.md](02_SPARK_PYSPARK_FOUNDATIONS.md): Apache Spark architecture (Driver/Executor), Lazy Evaluation, DAG execution, Transformations vs Actions, Wide vs Narrow dependencies, Shuffling, and Partitioning.
+- [03_DATA_QUALITY.md](03_DATA_QUALITY.md): Intentional defect injection, schema enforcement, business key validation, referential integrity via anti-joins, standardized quarantine routing, and reconciliation metrics.
+- [04_SPARK_SQL_WINDOWS.md](04_SPARK_SQL_WINDOWS.md): Temporary views, Spark SQL analytics, and Window Functions (`ROW_NUMBER`, `DENSE_RANK`, `LAG`, running sums).
+- [IMPLEMENTATION_MAP.md](IMPLEMENTATION_MAP.md): Skill-to-code mapping tracing requirements from domain to implementation functions and Parquet outputs.
+- [INTERVIEW_QA.md](INTERVIEW_QA.md): Comprehensive interview questions and expected technical answers covering all Module 1 topics.
+- [PROGRESS.md](PROGRESS.md): Detailed tracking table for build, test, and study milestones.

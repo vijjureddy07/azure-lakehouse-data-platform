@@ -16,7 +16,7 @@ Raw data from transaction systems, third-party APIs, and IoT devices is messy, u
 Across all modules, defining data models, schemas, ingestion pipelines, quality validation rules, and transformation logic.
 
 ### EXACT FILE / FUNCTION
-- [local_batch_pipeline.py](file:///Users/vijjureddy/Job%20Switch%20Projects/azure-lakehouse-data-platform/src/pipelines/local_batch_pipeline.py#L38-L148) (`LocalBatchPipeline.run()`)
+- [local_batch_pipeline.py](../src/pipelines/local_batch_pipeline.py) (`LocalBatchPipeline.run()`)
 
 ### SMALL EXAMPLE
 ```python
@@ -45,7 +45,7 @@ Manual data processing is error-prone, unscalable, and cannot meet business SLAs
 In Module 1's end-to-end local batch pipeline runner that orchestrates data generation, ingestion, quality checks, curation, SQL queries, and metrics export.
 
 ### EXACT FILE / FUNCTION
-- [local_batch_pipeline.py](file:///Users/vijjureddy/Job%20Switch%20Projects/azure-lakehouse-data-platform/src/pipelines/local_batch_pipeline.py#L65-L135) (`LocalBatchPipeline.run()`)
+- [local_batch_pipeline.py](../src/pipelines/local_batch_pipeline.py) (`LocalBatchPipeline.run()`)
 
 ### SMALL EXAMPLE
 ```python
@@ -75,7 +75,7 @@ Decoupling sources and sinks allows pipelines to be modular and testable, swappi
 - Sinks: Columnar Parquet directories in `output/cleaned/`, `output/quarantine/`, `output/curated/`, and `output/metrics/`.
 
 ### EXACT FILE / FUNCTION
-- [local_batch_pipeline.py](file:///Users/vijjureddy/Job%20Switch%20Projects/azure-lakehouse-data-platform/src/pipelines/local_batch_pipeline.py#L137-L162) (`_ingest_raw_data` & `_write_cleaned_and_quarantine`)
+- [local_batch_pipeline.py](../src/pipelines/local_batch_pipeline.py) (`_ingest_raw_data` & `_write_cleaned_and_quarantine`)
 
 ### SMALL EXAMPLE
 ```python
@@ -106,7 +106,7 @@ ETL prevents dirty raw data from landing in target databases but requires dedica
 Module 1 follows the Lakehouse ETL/ELT hybrid: Raw files are read into PySpark compute, standardized and cleaned, written as clean Parquet, and then transformed into curated business datasets.
 
 ### EXACT FILE / FUNCTION
-- [sales.py](file:///Users/vijjureddy/Job%20Switch%20Projects/azure-lakehouse-data-platform/src/transformations/sales.py#L32-L138) (`build_curated_sales`)
+- [sales.py](../src/transformations/sales.py) (`build_curated_sales`)
 
 ### SMALL EXAMPLE
 ```python
@@ -135,7 +135,7 @@ Batch processing is computationally efficient for high-throughput historical, da
 The Module 1 pipeline processes the retail dataset as a discrete batch job.
 
 ### EXACT FILE / FUNCTION
-- [local_batch_pipeline.py](file:///Users/vijjureddy/Job%20Switch%20Projects/azure-lakehouse-data-platform/src/pipelines/local_batch_pipeline.py#L38-L135)
+- [local_batch_pipeline.py](../src/pipelines/local_batch_pipeline.py)
 
 ### SMALL EXAMPLE
 ```python
@@ -165,8 +165,8 @@ Lakehouse eliminates dual-system architectures where data engineers had to copy 
 Module 1 sets up the foundations of the Lakehouse architecture (Raw -> Cleaned -> Curated Parquet layers), preparing for Delta Lake ACID features in Module 3.
 
 ### EXACT FILE / FUNCTION
-- [retail_schemas.py](file:///Users/vijjureddy/Job%20Switch%20Projects/azure-lakehouse-data-platform/src/schemas/retail_schemas.py#L24-L109)
-- [sales.py](file:///Users/vijjureddy/Job%20Switch%20Projects/azure-lakehouse-data-platform/src/transformations/sales.py)
+- [retail_schemas.py](../src/schemas/retail_schemas.py)
+- [sales.py](../src/transformations/sales.py)
 
 ### INTERVIEW QUESTION
 > "Why is the Lakehouse architecture replacing traditional two-tier Data Lake + Data Warehouse architectures?"
@@ -190,8 +190,8 @@ Modern enterprise platforms must ingest both tabular transactional tables and fl
 - Semi-Structured: JSON Lines for payments (`payments.json`).
 
 ### EXACT FILE / FUNCTION
-- [generate_retail_data.py](file:///Users/vijjureddy/Job%20Switch%20Projects/azure-lakehouse-data-platform/src/data_generation/generate_retail_data.py#L297-L300) (`_write_json`)
-- [retail_schemas.py](file:///Users/vijjureddy/Job%20Switch%20Projects/azure-lakehouse-data-platform/src/schemas/retail_schemas.py#L93-L101) (`RAW_PAYMENTS_SCHEMA`)
+- [generate_retail_data.py](../src/data_generation/generate_retail_data.py) (`_write_json`)
+- [retail_schemas.py](../src/schemas/retail_schemas.py) (`RAW_PAYMENTS_SCHEMA`)
 
 ### SMALL EXAMPLE
 ```python
@@ -219,8 +219,8 @@ Relying on `inferSchema=true` causes severe performance penalties (Spark must pe
 All 8 raw datasets are ingested using explicit `StructType` definitions in `src/schemas/retail_schemas.py`.
 
 ### EXACT FILE / FUNCTION
-- [retail_schemas.py](file:///Users/vijjureddy/Job%20Switch%20Projects/azure-lakehouse-data-platform/src/schemas/retail_schemas.py#L24-L101)
-- [local_batch_pipeline.py](file:///Users/vijjureddy/Job%20Switch%20Projects/azure-lakehouse-data-platform/src/pipelines/local_batch_pipeline.py#L137-L150)
+- [retail_schemas.py](../src/schemas/retail_schemas.py)
+- [local_batch_pipeline.py](../src/pipelines/local_batch_pipeline.py)
 
 ### SMALL EXAMPLE
 ```python
@@ -251,8 +251,8 @@ Silent drops lead to lost business revenue and unexplainable discrepancies. Pipe
 Implemented across all transformations (`customers.py`, `products.py`, `orders.py`), outputting to `output/quarantine/` in a uniform `QUARANTINE_SCHEMA`.
 
 ### EXACT FILE / FUNCTION
-- [rules.py](file:///Users/vijjureddy/Job%20Switch%20Projects/azure-lakehouse-data-platform/src/quality/rules.py#L42-L65) (`format_as_quarantine`)
-- [customers.py](file:///Users/vijjureddy/Job%20Switch%20Projects/azure-lakehouse-data-platform/src/transformations/customers.py#L85-L95)
+- [rules.py](../src/quality/rules.py) (`format_as_quarantine`)
+- [customers.py](../src/transformations/customers.py)
 
 ### SMALL EXAMPLE
 ```python
@@ -281,7 +281,7 @@ In production, pipelines fail due to network drops, cluster preemptions, or infr
 All Parquet writes in Module 1 use deterministic `mode("overwrite")` semantics, ensuring re-running the batch against the same input yields identical results.
 
 ### EXACT FILE / FUNCTION
-- [local_batch_pipeline.py](file:///Users/vijjureddy/Job%20Switch%20Projects/azure-lakehouse-data-platform/src/pipelines/local_batch_pipeline.py#L112-L113) (`.write.mode("overwrite").parquet(...)`)
+- [local_batch_pipeline.py](../src/pipelines/local_batch_pipeline.py) (`.write.mode("overwrite").parquet(...)`)
 
 ### SMALL EXAMPLE
 ```python
@@ -310,7 +310,7 @@ Full refresh is simpler, eliminates state synchronization bugs, and is suitable 
 Module 1 intentionally implements **Full Refresh** with overwrite semantics for local PySpark development. Incremental loading (CDC/Watermarking/Delta MERGE) is part of subsequent modules.
 
 ### EXACT FILE / FUNCTION
-- [local_batch_pipeline.py](file:///Users/vijjureddy/Job%20Switch%20Projects/azure-lakehouse-data-platform/src/pipelines/local_batch_pipeline.py)
+- [local_batch_pipeline.py](../src/pipelines/local_batch_pipeline.py)
 
 ### INTERVIEW QUESTION
 > "What are the main methods used to track and extract incremental data from source systems?"
