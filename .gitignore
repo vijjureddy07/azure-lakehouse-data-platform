@@ -74,7 +74,8 @@ logs/
 # Data and outputs
 data/raw/
 output/
-!data/sample/.gitkeep
+!data/sample/
+!data/sample/*
 !output/.gitkeep
 spark-warehouse/
 .pytest_cache/
@@ -91,3 +92,5 @@ htmlcov/
 *.jsonl
 *.delta
 _delta_log/
+!data/sample/*.csv
+!data/sample/*.json

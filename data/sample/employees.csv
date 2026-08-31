@@ -1,0 +1,6 @@
+employee_id,store_id,first_name,last_name,email,role,hire_date,is_active
+EMP-00001,STR-0003,Casey,Johnson,casey.johnson1@retailplatform.com,Store Manager,2021-08-03,True
+EMP-00002,STR-0001,Alex,Johnson,alex.johnson2@retailplatform.com,Store Associate,2019-12-24,True
+EMP-00003,STR-0003,Dakota,Smith,dakota.smith3@retailplatform.com,Store Manager,2019-09-10,True
+EMP-00004,STR-0003,Casey,Miller,casey.miller4@retailplatform.com,Store Associate,2021-10-27,True
+EMP-00005,STR-0003,Sam,Smith,sam.smith5@retailplatform.com,Store Associate,2023-12-10,True

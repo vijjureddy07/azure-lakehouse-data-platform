@@ -1,0 +1,22 @@
+product_id,product_sku,product_name,category,subcategory,unit_price,cost_price,is_active,description
+PROD-00001,SKU-ELE-LAP-00001,Laptops Model 1,Electronics,Laptops,324.79,157.06,True,High quality Laptops Model 1 in Electronics category.
+PROD-00002,SKU-ELE-SMA-00002,Smartphones Model 2,Electronics,Smartphones,546.82,357.13,True,High quality Smartphones Model 2 in Electronics category.
+PROD-00003,SKU-  E-AUD-00003,Audio Model 3,Electronics,Audio,468.67,325.76,True,High quality Audio Model 3 in   ELECTRONICS  category.
+PROD-00004,SKU-  E-ACC-00004,Accessories Model 4,Electronics,Accessories,354.75,246.65,True,High quality Accessories Model 4 in   ELECTRONICS  category.
+PROD-00005,SKU-  E-WEA-00005,Wearables Model 5,Electronics,Wearables,354.49,197.09,True,High quality Wearables Model 5 in   ELECTRONICS  category.
+PROD-00006,SKU-HOM-FUR-00006,Furniture Model 6,Home & Living,Furniture,165.66,87.70,True,High quality Furniture Model 6 in Home & Living category.
+PROD-00007,SKU-HOM-COO-00007,Cookware Model 7,Home & Living,Cookware,108.45,72.66,True,High quality Cookware Model 7 in Home & Living category.
+PROD-00008,SKU-HOM-BED-00008,Bedding Model 8,Home & Living,Bedding,447.99,204.98,True,High quality Bedding Model 8 in Home & Living category.
+PROD-00009,SKU-HOM-DEC-00009,Decor Model 9,Home & Living,Decor,459.59,239.82,True,High quality Decor Model 9 in Home & Living category.
+PROD-00010,SKU-HOM-LIG-00010,Lighting Model 10,Home & Living,Lighting,489.26,243.00,True,High quality Lighting Model 10 in Home & Living category.
+PROD-00011,SKU-APP-MEN-00011,Men's Clothing Model 11,Apparel,Men'S Clothing,768.27,476.93,True,High quality Men's Clothing Model 11 in Apparel category.
+PROD-00012,SKU-APP-WOM-00012,Women's Clothing Model 12,Apparel,Women'S Clothing,83.78,57.44,True,High quality Women's Clothing Model 12 in Apparel category.
+PROD-00013,SKU-APP-FOO-00013,Footwear Model 13,Apparel,Footwear,46.51,32.33,True,High quality Footwear Model 13 in Apparel category.
+PROD-00014,SKU-APP-OUT-00014,Outerwear Model 14,Apparel,Outerwear,464.78,286.07,True,High quality Outerwear Model 14 in Apparel category.
+PROD-00015,SKU-BEA-SKI-00015,Skincare Model 15,Beauty,Skincare,715.20,470.70,True,High quality Skincare Model 15 in Beauty category.
+PROD-00016,SKU-BEA-HAI-00016,Haircare Model 16,Beauty,Haircare,559.77,301.92,True,High quality Haircare Model 16 in Beauty category.
+PROD-00017,SKU-BEA-FRA-00017,Fragrance Model 17,Beauty,Fragrance,377.07,210.91,True,High quality Fragrance Model 17 in Beauty category.
+PROD-00018,SKU-BEA-COS-00018,Cosmetics Model 18,Beauty,Cosmetics,653.86,436.52,True,High quality Cosmetics Model 18 in Beauty category.
+PROD-00019,SKU-SPO-FIT-00019,Fitness Equipment Model 19,Sports,Fitness Equipment,690.58,369.47,True,High quality Fitness Equipment Model 19 in Sports category.
+PROD-00020,SKU-SPO-OUT-00020,Outdoor Gear Model 20,Sports,Outdoor Gear,392.83,185.33,True,High quality Outdoor Gear Model 20 in Sports category.
+PROD-00021,SKU-SPO-ATH-00021,Athletic Apparel Model 21,Sports,Athletic Apparel,715.49,303.49,True,High quality Athletic Apparel Model 21 in Sports category.

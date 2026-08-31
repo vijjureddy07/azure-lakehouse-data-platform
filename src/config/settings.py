@@ -46,6 +46,17 @@ class ScaleConfig:
 
 
 SCALE_PRESETS: dict[str, ScaleConfig] = {
+    "sample": ScaleConfig(
+        name="sample",
+        num_customers=25,
+        num_products=10,
+        num_stores=3,
+        num_employees=5,
+        num_orders=50,
+        max_items_per_order=3,
+        return_rate=0.10,
+        seed=42,
+    ),
     "small": ScaleConfig(
         name="small",
         num_customers=500,

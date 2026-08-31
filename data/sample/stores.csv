@@ -1,0 +1,4 @@
+store_id,store_name,store_type,region,state,country,opened_date
+STR-0001,Store STR-0001 (NY),Online,East,NY,US,2015-03-19
+STR-0002,Store STR-0002 (IL),Flagship,Central,IL,US,2016-11-24
+STR-0003,Store STR-0003 (TX),Outlet,South,TX,US,2015-11-15

@@ -1,0 +1,46 @@
+{
+  "name": "ds_adls_landing_file",
+  "type": "Microsoft.DataFactory/factories/datasets",
+  "properties": {
+    "description": "Parameterized Binary ADLS Gen2 dataset for landing raw files unchanged",
+    "linkedServiceName": {
+      "referenceName": "ls_adls_gen2",
+      "type": "LinkedServiceReference",
+      "parameters": {
+        "storageAccountName": "@dataset().storageAccountName",
+        "url": "@concat('https://', dataset().storageAccountName, '.dfs.core.windows.net')"
+      }
+    },
+    "parameters": {
+      "storageAccountName": {
+        "type": "string",
+        "defaultValue": "stlakehousedev"
+      },
+      "fileSystem": {
+        "type": "string",
+        "defaultValue": "lakehouse"
+      },
+      "folderPath": {
+        "type": "string"
+      },
+      "fileName": {
+        "type": "string"
+      }
+    },
+    "annotations": [
+      "Binary",
+      "ADLSGen2",
+      "LandingZone",
+      "Module2"
+    ],
+    "type": "Binary",
+    "typeProperties": {
+      "location": {
+        "type": "AzureBlobFSLocation",
+        "fileSystem": "@dataset().fileSystem",
+        "folderPath": "@dataset().folderPath",
+        "fileName": "@dataset().fileName"
+      }
+    }
+  }
+}

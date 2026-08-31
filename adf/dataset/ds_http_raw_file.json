@@ -1,0 +1,35 @@
+{
+  "name": "ds_http_raw_file",
+  "type": "Microsoft.DataFactory/factories/datasets",
+  "properties": {
+    "description": "Parameterized Binary HTTP dataset for raw source file ingestion",
+    "linkedServiceName": {
+      "referenceName": "ls_http_source",
+      "type": "LinkedServiceReference",
+      "parameters": {
+        "baseUrl": "@dataset().baseUrl"
+      }
+    },
+    "parameters": {
+      "baseUrl": {
+        "type": "string",
+        "defaultValue": "https://raw.githubusercontent.com/vijjureddy07/azure-lakehouse-data-platform/main/data/sample/"
+      },
+      "relativeUrl": {
+        "type": "string"
+      }
+    },
+    "annotations": [
+      "Binary",
+      "HTTP",
+      "Module2"
+    ],
+    "type": "Binary",
+    "typeProperties": {
+      "location": {
+        "type": "HttpServerLocation",
+        "relativeUrl": "@dataset().relativeUrl"
+      }
+    }
+  }
+}

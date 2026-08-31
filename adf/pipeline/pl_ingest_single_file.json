@@ -1,0 +1,114 @@
+{
+  "name": "pl_ingest_single_file",
+  "properties": {
+    "description": "Parameterized child pipeline that copies a single source file from HTTP to ADLS Gen2 raw landing zone without modification",
+    "activities": [
+      {
+        "name": "Copy_RawFile_HTTP_to_ADLS",
+        "type": "Copy",
+        "dependsOn": [],
+        "policy": {
+          "timeout": "0.00:10:00",
+          "retry": 2,
+          "retryIntervalInSeconds": 30,
+          "secureOutput": false,
+          "secureInput": false
+        },
+        "userProperties": [
+          {
+            "name": "DatasetName",
+            "value": "@pipeline().parameters.dataset_name"
+          },
+          {
+            "name": "SourceRelativeUrl",
+            "value": "@pipeline().parameters.source_relative_url"
+          },
+          {
+            "name": "DestinationFolder",
+            "value": "@pipeline().parameters.destination_folder_path"
+          },
+          {
+            "name": "DestinationFile",
+            "value": "@pipeline().parameters.destination_file_name"
+          }
+        ],
+        "typeProperties": {
+          "source": {
+            "type": "BinarySource",
+            "storeSettings": {
+              "type": "HttpReadSettings",
+              "requestMethod": "GET"
+            },
+            "formatSettings": {
+              "type": "BinaryReadSettings"
+            }
+          },
+          "sink": {
+            "type": "BinarySink",
+            "storeSettings": {
+              "type": "AzureBlobFSWriteSettings"
+            }
+          },
+          "enableStaging": false
+        },
+        "inputs": [
+          {
+            "referenceName": "ds_http_raw_file",
+            "type": "DatasetReference",
+            "parameters": {
+              "baseUrl": "@pipeline().parameters.source_base_url",
+              "relativeUrl": "@pipeline().parameters.source_relative_url"
+            }
+          }
+        ],
+        "outputs": [
+          {
+            "referenceName": "ds_adls_landing_file",
+            "type": "DatasetReference",
+            "parameters": {
+              "storageAccountName": "@pipeline().parameters.storage_account_name",
+              "fileSystem": "@pipeline().parameters.destination_container",
+              "folderPath": "@pipeline().parameters.destination_folder_path",
+              "fileName": "@pipeline().parameters.destination_file_name"
+            }
+          }
+        ]
+      }
+    ],
+    "parameters": {
+      "dataset_name": {
+        "type": "string"
+      },
+      "source_base_url": {
+        "type": "string",
+        "defaultValue": "https://raw.githubusercontent.com/vijjureddy07/azure-lakehouse-data-platform/main/data/sample/"
+      },
+      "source_relative_url": {
+        "type": "string"
+      },
+      "source_file_name": {
+        "type": "string"
+      },
+      "destination_file_name": {
+        "type": "string"
+      },
+      "storage_account_name": {
+        "type": "string",
+        "defaultValue": "stlakehousedev"
+      },
+      "destination_container": {
+        "type": "string",
+        "defaultValue": "lakehouse"
+      },
+      "destination_folder_path": {
+        "type": "string"
+      }
+    },
+    "annotations": [
+      "ChildPipeline",
+      "CopyActivity",
+      "RawLanding",
+      "Module2"
+    ]
+  }
+}

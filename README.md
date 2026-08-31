@@ -9,7 +9,10 @@
 
 This repository demonstrates the engineering, modeling, data quality enforcement, and analytical curation of an omnichannel retail enterprise data platform. 
 
-The project is structured into progressive modules. **Module 1 (Implemented Now)** establishes genuine local Data Engineering and PySpark foundations—including explicit schema enforcement, defect quarantine routing, referential integrity validation, financial Decimal precision, window functions, Spark SQL analytics, and partitioned Parquet storage—prior to introducing cloud orchestration and cloud infrastructure in subsequent modules.
+The project is structured into progressive modules:
+- **Module 1 (Complete):** Local PySpark Data Engineering foundations, strict schema enforcement, defect quarantine routing, referential integrity validation, financial Decimal precision, window functions, Spark SQL analytics, and partitioned Parquet storage.
+- **Module 2 (Complete & Deployment-Ready | Cloud Verification Pending):** Azure Cloud Ingestion Platform — Parameterized Azure Data Factory (ADF) master-child orchestration, Azure Data Lake Storage Gen2 (ADLS Gen2) with Hierarchical Namespace (HNS), Microsoft Entra System-Assigned Managed Identity, Azure RBAC, and dynamic landing path formatting.
+- **Module 3 (Not Started):** Azure Databricks, Delta Lake ACID Transactions, and Medallion Architecture (Bronze -> Silver -> Gold).
 
 ---
 
@@ -17,7 +20,7 @@ The project is structured into progressive modules. **Module 1 (Implemented Now)
 
 ```
 +----------------------------------------------------------------------------------------------------+
-|                                    MODULE 1: CURRENT IMPLEMENTATION                                 |
+|                                 MODULE 1: LOCAL PYSPARK DATA PLATFORM                              |
 |                                                                                                    |
 |  [ Synthetic Raw Data ] (CSV & JSON Lines with Injected Real-World Defects)                        |
 |             │                                                                                      |
@@ -48,14 +51,32 @@ The project is structured into progressive modules. **Module 1 (Implemented Now)
 |  [ Spark SQL Analytics Views ] ──────────────────► [ In-Memory Temporary Views & KPI Reports ]     |
 |  [ Quality Audit Reconciliation ] ───────────────► [ output/metrics/quality_summary/ ]             |
 +----------------------------------------------------------------------------------------------------+
+|                                 MODULE 2: AZURE CLOUD INGESTION PLATFORM                           |
+|                                                                                                    |
+|  [ External Raw Sources ] (HTTP / GitHub Raw Sample Endpoints)                                     |
+|             │                                                                                      |
+|             ▼                                                                                      |
+|  [ Azure Data Factory: adf-lakehouse-dev ] (System-Assigned Managed Identity)                      |
+|             ├── 1. Master Pipeline (pl_master_retail_ingestion): Metadata Array (8 datasets)       |
+|             ├── 2. ForEach Iteration: Concurrent execution across dataset array                    |
+|             └── 3. Child Pipeline (pl_ingest_single_file): Parameterized Copy Activity             |
+|                    ├── HTTP Source Linked Service: ls_http_source (Dataset: ds_http_raw_file)      |
+|                    └── ADLS Gen2 Sink Linked Service: ls_adls_gen2 (Dataset: ds_adls_landing_file) |
+|             │                                                                                      |
+|             ▼ (Azure RBAC: Storage Blob Data Contributor)                                          |
+|  [ ADLS Gen2 Storage Account: stlakehousedev ] (Hierarchical Namespace Enabled)                    |
+|             └── Container: lakehouse                                                               |
+|                 └── landing/retail/<dataset>/ingestion_date=<yyyy-MM-dd>/run_id=<run_id>/<file>    |
++----------------------------------------------------------------------------------------------------+
 ```
 
-### 🗺️ Planned Cloud Roadmap (Upcoming Modules)
-- **Module 2:** Azure Ingestion — Azure Data Factory (ADF) pipelines & ADLS Gen2 Hierarchical Storage.
-- **Module 3:** Azure Databricks, Delta Lake ACID Transactions, and Medallion Architecture (Bronze -> Silver -> Gold).
-- **Module 4:** Advanced PySpark, Dimensional Modeling (Star Schema / Kimball), and Slowly Changing Dimensions (SCD Type 1 & 2).
-- **Module 5:** Pipeline Orchestration with Databricks Workflows, Azure Monitor, and Logging.
-- **Module 6:** CI/CD Automation with GitHub Actions, Automated PySpark Testing, and Serving Layers.
+### 🗺️ Cloud Roadmap
+- **Module 1:** Local PySpark processing and quality framework — **COMPLETE**
+- **Module 2:** Azure Cloud Ingestion Platform (ADF + ADLS Gen2) — **BUILD COMPLETE (Deployment-Ready)**
+- **Module 3:** Azure Databricks, Delta Lake ACID Transactions, and Medallion Architecture (Bronze -> Silver -> Gold) — **NOT STARTED**
+- **Module 4:** Advanced PySpark, Dimensional Modeling (Star Schema / Kimball), and Slowly Changing Dimensions (SCD Type 1 & 2) — **NOT STARTED**
+- **Module 5:** Pipeline Orchestration with Databricks Workflows, Azure Monitor, and Logging — **NOT STARTED**
+- **Module 6:** CI/CD Automation with GitHub Actions, Automated PySpark Testing, and Serving Layers — **NOT STARTED**
 
 ---
 
@@ -155,9 +176,18 @@ python -m src.pipelines.local_batch_pipeline --scale small
 python -m src.pipelines.local_batch_pipeline --scale standard
 ```
 
-### 4. Run Automated Test Suite
+### 4. Run Automated Test Suite (Local & ADF Artifacts)
 ```bash
 pytest -v
+```
+
+### 5. Deploy & Verify Azure Cloud Ingestion (Module 2)
+```bash
+# Provision Azure Resource Group, ADLS Gen2 (HNS), ADF (Managed Identity), and RBAC:
+./scripts/deploy_azure_resources.sh
+
+# Verify Azure deployment and landed ADLS Gen2 landing files:
+python scripts/verify_azure_deployment.py --storage-account stlakehousedev --data-factory adf-lakehouse-dev
 ```
 
 ---
@@ -232,6 +262,7 @@ Comprehensive Data Engineering study guides and interview preparation materials 
 - [docs/02_SPARK_PYSPARK_FOUNDATIONS.md](docs/02_SPARK_PYSPARK_FOUNDATIONS.md): Apache Spark architecture, lazy evaluation, DAGs, narrow vs wide transformations, shuffling, and Parquet.
 - [docs/03_DATA_QUALITY.md](docs/03_DATA_QUALITY.md): Quality rules, defect injection catalog, and quarantine architecture.
 - [docs/04_SPARK_SQL_WINDOWS.md](docs/04_SPARK_SQL_WINDOWS.md): Spark SQL temporary views and PySpark window functions (`ROW_NUMBER`, `DENSE_RANK`, `LAG`, `SUM`).
+- [docs/05_ADF_ADLS_CLOUD_INGESTION.md](docs/05_ADF_ADLS_CLOUD_INGESTION.md): Azure Data Factory, ADLS Gen2 with Hierarchical Namespace, Managed Identity, and RBAC.
 - [docs/IMPLEMENTATION_MAP.md](docs/IMPLEMENTATION_MAP.md): Skill-to-code traceability matrix.
 - [docs/INTERVIEW_QA.md](docs/INTERVIEW_QA.md): Real-world interview questions and concise technical answers.
 - [docs/PROGRESS.md](docs/PROGRESS.md): Detailed progress tracker.

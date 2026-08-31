@@ -1,0 +1,138 @@
+{
+  "name": "pl_master_retail_ingestion",
+  "properties": {
+    "description": "Metadata-driven master orchestration pipeline that iterates across all 8 retail datasets and invokes the child ingestion pipeline",
+    "activities": [
+      {
+        "name": "ForEach_RetailDataset",
+        "type": "ForEach",
+        "dependsOn": [],
+        "userProperties": [],
+        "typeProperties": {
+          "items": {
+            "value": "@pipeline().parameters.datasets_config",
+            "type": "Expression"
+          },
+          "isSequential": false,
+          "batchCount": 8,
+          "activities": [
+            {
+              "name": "Execute_IngestSingleFile",
+              "type": "ExecutePipeline",
+              "dependsOn": [],
+              "userProperties": [
+                {
+                  "name": "Dataset",
+                  "value": "@item().dataset_name"
+                }
+              ],
+              "typeProperties": {
+                "pipeline": {
+                  "referenceName": "pl_ingest_single_file",
+                  "type": "PipelineReference"
+                },
+                "waitOnCompletion": true,
+                "parameters": {
+                  "dataset_name": "@item().dataset_name",
+                  "source_base_url": "@pipeline().parameters.source_base_url",
+                  "source_relative_url": "@item().source_relative_url",
+                  "source_file_name": "@item().source_file_name",
+                  "destination_file_name": "@item().destination_file_name",
+                  "storage_account_name": "@pipeline().parameters.storage_account_name",
+                  "destination_container": "@pipeline().parameters.destination_container",
+                  "destination_folder_path": "@concat('landing/retail/', item().dataset_name, '/ingestion_date=', formatDateTime(utcnow(), 'yyyy-MM-dd'), '/run_id=', pipeline().RunId)"
+                }
+              }
+            }
+          ]
+        }
+      }
+    ],
+    "parameters": {
+      "environment": {
+        "type": "string",
+        "defaultValue": "dev"
+      },
+      "source_base_url": {
+        "type": "string",
+        "defaultValue": "https://raw.githubusercontent.com/vijjureddy07/azure-lakehouse-data-platform/main/data/sample/"
+      },
+      "storage_account_name": {
+        "type": "string",
+        "defaultValue": "stlakehousedev"
+      },
+      "destination_container": {
+        "type": "string",
+        "defaultValue": "lakehouse"
+      },
+      "datasets_config": {
+        "type": "array",
+        "defaultValue": [
+          {
+            "dataset_name": "customers",
+            "source_relative_url": "customers.csv",
+            "source_file_name": "customers.csv",
+            "destination_file_name": "customers.csv",
+            "format": "csv"
+          },
+          {
+            "dataset_name": "products",
+            "source_relative_url": "products.csv",
+            "source_file_name": "products.csv",
+            "destination_file_name": "products.csv",
+            "format": "csv"
+          },
+          {
+            "dataset_name": "stores",
+            "source_relative_url": "stores.csv",
+            "source_file_name": "stores.csv",
+            "destination_file_name": "stores.csv",
+            "format": "csv"
+          },
+          {
+            "dataset_name": "employees",
+            "source_relative_url": "employees.csv",
+            "source_file_name": "employees.csv",
+            "destination_file_name": "employees.csv",
+            "format": "csv"
+          },
+          {
+            "dataset_name": "orders",
+            "source_relative_url": "orders.csv",
+            "source_file_name": "orders.csv",
+            "destination_file_name": "orders.csv",
+            "format": "csv"
+          },
+          {
+            "dataset_name": "order_items",
+            "source_relative_url": "order_items.csv",
+            "source_file_name": "order_items.csv",
+            "destination_file_name": "order_items.csv",
+            "format": "csv"
+          },
+          {
+            "dataset_name": "payments",
+            "source_relative_url": "payments.json",
+            "source_file_name": "payments.json",
+            "destination_file_name": "payments.json",
+            "format": "json"
+          },
+          {
+            "dataset_name": "returns",
+            "source_relative_url": "returns.csv",
+            "source_file_name": "returns.csv",
+            "destination_file_name": "returns.csv",
+            "format": "csv"
+          }
+        ]
+      }
+    },
+    "annotations": [
+      "MasterPipeline",
+      "Orchestration",
+      "MetadataDriven",
+      "ForEach",
+      "Module2"
+    ]
+  }
+}

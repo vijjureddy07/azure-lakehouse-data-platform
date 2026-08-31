@@ -84,3 +84,45 @@ Over-partitioning (e.g., partitioning by high-cardinality keys like `customer_id
 ### Q12: What is pipeline idempotency and how is it implemented in Module 1?
 **Answer:**  
 Idempotency means re-running a pipeline against the same source input produces the exact same output without side effects, duplicates, or corrupted state. In Module 1, all dataset writers use Spark's `mode("overwrite")` semantics, ensuring the target output directories are cleanly replaced on every batch execution.
+
+---
+
+## Azure Cloud Ingestion (Module 2 Focus)
+
+### Q13: What is the architectural advantage of enabling Hierarchical Namespace (HNS) in ADLS Gen2 for Lakehouse platforms?
+**Answer:**  
+Standard Azure Blob storage uses a flat object store where directory structures are virtual key prefixes. Renaming a directory requires $O(N)$ copy-and-delete API operations across all blobs. ADLS Gen2 with Hierarchical Namespace (HNS) implements true filesystem directory hierarchies. Renaming or moving a directory becomes an $O(1)$ atomic metadata pointer update. This is critical for big data engines like Spark and Delta Lake, which rely on atomic directory rename operations for job commits, idempotent partition overwrites, and ACID transaction commits.
+
+---
+
+### Q14: How does a metadata-driven ingestion architecture work in Azure Data Factory?
+**Answer:**  
+Instead of creating dozens of hardcoded pipelines, we use a Master-Child orchestration pattern:
+1. **Master Pipeline (`pl_master_retail_ingestion`):** Defines a metadata configuration array specifying dataset parameters (`dataset_name`, `source_relative_url`, `destination_file_name`, format).
+2. **ForEach Activity:** Iterates across the metadata array items concurrently.
+3. **Child Pipeline (`pl_ingest_single_file`):** A single generic, reusable pipeline containing a parameterized Copy Activity that reads from a parameterized HTTP source dataset and writes directly to a parameterized ADLS Gen2 landing dataset.
+When a new dataset needs to be onboarded, we append a JSON object to the metadata configuration without editing visual pipeline canvases.
+
+---
+
+### Q15: Why is Managed Identity with Azure RBAC preferred over Storage Account Keys or SAS Tokens?
+**Answer:**  
+- **Storage Account Keys:** Grant unrestricted root-level access to the entire storage account, bypass fine-grained access policies, cannot be scoped to individual containers, and introduce credential leakage risks if committed to code repositories.
+- **SAS Tokens:** Expire over time, require key vault storage, and demand ongoing manual rotation workflows.
+- **System-Assigned Managed Identity:** Leverages Microsoft Entra ID to authenticate ADF directly to ADLS Gen2 with zero stored passwords or keys. The ADF resource is granted the least-privilege role `Storage Blob Data Contributor`. Azure automatically handles token issuance, rotation, and lifecycle management without code intervention.
+
+---
+
+### Q16: When would you use Azure RBAC vs ADLS Gen2 POSIX Access Control Lists (ACLs)?
+**Answer:**  
+- **Azure RBAC:** Coarse-grained access control applied at the Subscription, Resource Group, Storage Account, or Container level (e.g., granting ADF or Databricks `Storage Blob Data Contributor` across the entire `lakehouse` container).
+- **POSIX ACLs:** Fine-grained access control applied directly to specific subdirectories and individual files within an HNS-enabled storage account (e.g., granting Data Science teams read-only access to `lakehouse/curated/features/` while restricting access to `lakehouse/raw/pii/`).
+
+---
+
+### Q17: Why must the raw landing zone preserve source files without transformation?
+**Answer:**  
+1. **Source Fidelity & Auditability:** Preserving the exact original byte stream (CSV as CSV, JSON as JSON) provides an immutable record of what external upstream systems delivered, enabling compliance verification and historical audit.
+2. **Decoupling Transport from Compute:** Ingestion (ADF Copy Activity) is lightweight, fast, and serverless. Heavy computation, schema enforcement, deduplication, and transformations are offloaded to distributed compute engines (Spark / Delta Lake in Module 3).
+3. **Reprocessability:** If downstream transformation logic contains a bug or business rules change, having unaltered raw landing data partitioned by `ingestion_date` and `run_id` allows backfilling without requesting re-exports from source providers.
+

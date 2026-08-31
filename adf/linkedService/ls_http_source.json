@@ -1,0 +1,24 @@
+{
+  "name": "ls_http_source",
+  "type": "Microsoft.DataFactory/factories/linkedservices",
+  "properties": {
+    "description": "Parameterized HTTP source linked service for acquiring raw source files over HTTPS (e.g. GitHub Raw endpoint)",
+    "parameters": {
+      "baseUrl": {
+        "type": "string",
+        "defaultValue": "https://raw.githubusercontent.com/vijjureddy07/azure-lakehouse-data-platform/main/data/sample/"
+      }
+    },
+    "annotations": [
+      "HTTPSource",
+      "Parameterized",
+      "Module2"
+    ],
+    "type": "HttpServer",
+    "typeProperties": {
+      "url": "@linkedService().baseUrl",
+      "enableServerCertificateValidation": true,
+      "authenticationType": "Anonymous"
+    }
+  }
+}

@@ -498,7 +498,9 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
     import argparse
 
-    parser = argparse.ArgumentParser(description="Generate synthetic retail dataset for Module 1")
-    parser.add_argument("--scale", choices=["small", "standard"], default="small", help="Scale preset (small or standard)")
+    parser = argparse.ArgumentParser(description="Generate synthetic retail dataset")
+    parser.add_argument("--scale", choices=["sample", "small", "standard"], default="small", help="Scale preset (sample, small, or standard)")
+    parser.add_argument("--output-dir", type=str, default=None, help="Optional custom output directory path")
     args = parser.parse_args()
-    generate_retail_dataset(args.scale)
+    out_path = Path(args.output_dir) if args.output_dir else None
+    generate_retail_dataset(scale=args.scale, output_dir=out_path)

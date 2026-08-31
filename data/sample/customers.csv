@@ -1,0 +1,26 @@
+customer_id,first_name,last_name,email,phone,address,city,state,country,postal_code,signup_date,loyalty_tier
+CUST-000001,Michael,Miller,michael.miller1@example.com,+1-555-967-6635,9991 Main Street,Metropolis,IL,US,44671,2021-08-30,SILVER
+CUST-000002,William,Johnson,william.johnson2@example.com,+1-555-821-2139,850 Main Street,Metropolis,MA,US,96673,2021-05-03,GOLD
+CUST-000003,Mary,Brown,mary.brown3@example.com,+1-555-786-5374,1269 Main Street,Metropolis,NY,US,89840,2022-08-14,GOLD
+CUST-000004,Patricia,Williams,patricia.williams4@example.com,+1-555-963-1916,3852 Main Street,Metropolis,CO,US,14207,2022-08-13,GOLD
+CUST-000005,Mary,Brown,mary.brown5@example.com,+1-555-246-5339,2387 Main Street,Metropolis,GA,US,42325,2024-09-23,GOLD
+CUST-000006,Elizabeth,Davis,elizabeth.davis6@example.com,+1-555-148-2796,2604 Main Street,Metropolis,GA,US,92240,2022-09-13,GOLD
+,Elizabeth,Johnson,elizabeth.johnson7@example.com,+1-555-798-9797,4471 Main Street,Metropolis,MA,US,94012,2022-08-16,PLATINUM
+CUST-000008,Robert,Davis,robert.davis8@example.com,+1-555-282-9317,1843 Main Street,Metropolis,TX,US,91959,2022-12-06,STANDARD
+CUST-000009,Elizabeth,Brown,,+1-555-119-2832,6047 Main Street,Metropolis,TX,US,50306,2022-08-04,SILVER
+CUST-000010,Elizabeth,Johnson,elizabeth.johnson10@example.com,+1-555-775-8787,9107 Main Street,Metropolis,NY,US,31643,2024-02-11,PLATINUM
+CUST-000011,Michael,Brown,michael.brown11@example.com,+1-555-629-8397,2082 Main Street,Metropolis,NC,US,42493,2024-03-19,SILVER
+CUST-000012,  ELIZABETH  , anderson ,elizabeth.anderson12@example.com,+1-555-438-2160,8523 Main Street,Metropolis, FL ,US,41195,2023-07-04,SILVER
+CUST-000013,William,Williams,william.williams13@example.com,+1-555-774-8062,5904 Main Street,Metropolis,GA,US,65519,2023-06-15,PLATINUM
+CUST-000014,James,Johnson,james.johnson14@example.com,+1-555-243-7912,3106 Main Street,Metropolis,CA,US,46509,2022-09-18,GOLD
+CUST-000015,Mary,Wilson,mary.wilson15@example.com,+1-555-342-3724,6758 Main Street,Metropolis,NC,US,73653,2023-99-99,STANDARD
+CUST-000016,James,Williams,james.williams16@example.com,+1-555-848-8973,2636 Main Street,Metropolis,MA,US,34890,2021-01-04,PLATINUM
+CUST-000017,Elizabeth,Anderson,elizabeth.anderson17@example.com,+1-555-261-1931,8420 Main Street,Metropolis,CA,US,20500,2024-03-07,GOLD
+CUST-000018,Mary,Brown,mary.brown18@example.com,+1-555-678-9565,5283 Main Street,Metropolis,MA,US,44179,2021-07-06,SILVER
+,Patricia,Jones,patricia.jones19@example.com,+1-555-676-2638,1300 Main Street,Metropolis,MA,US,80468,2021-07-23,GOLD
+CUST-000020,Robert,Williams,robert.williams20@example.com,+1-555-820-5956,8766 Main Street,Metropolis,WA,US,11025,2024-09-30,STANDARD
+CUST-000021,Mary,Williams,mary.williams21@example.com,+1-555-451-4335,4425 Main Street,Metropolis,IL,US,76244,2021-06-29,STANDARD
+CUST-000022,  JAMES  , johnson ,james.johnson22@example.com,+1-555-552-8007,9289 Main Street,Metropolis,ma,US,11267,2024-07-12,GOLD
+CUST-000023,John,Anderson,john.anderson23@example.com,+1-555-915-1653,5962 Main Street,Metropolis,CA,US,37535,2024-07-20,GOLD
+CUST-000024,Jennifer,Anderson,jennifer.anderson24@example.com,+1-555-281-7755,506 Main Street,Metropolis,MA,US,33509,2023-08-23,SILVER
+CUST-000025,Michael,Brown,michael.brown25@example.com,+1-555-571-6728,5100 Main Street,Metropolis,IL,US,39831,2021-09-05,STANDARD

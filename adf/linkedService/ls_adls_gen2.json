@@ -1,0 +1,26 @@
+{
+  "name": "ls_adls_gen2",
+  "type": "Microsoft.DataFactory/factories/linkedservices",
+  "properties": {
+    "description": "ADLS Gen2 Storage Account linked service with Managed Identity authentication",
+    "parameters": {
+      "storageAccountName": {
+        "type": "string",
+        "defaultValue": "stlakehousedev"
+      },
+      "url": {
+        "type": "string",
+        "defaultValue": "https://stlakehousedev.dfs.core.windows.net"
+      }
+    },
+    "annotations": [
+      "AzureDataLakeStorageGen2",
+      "ManagedIdentity",
+      "Module2"
+    ],
+    "type": "AzureBlobFS",
+    "typeProperties": {
+      "url": "@linkedService().url"
+    }
+  }
+}
