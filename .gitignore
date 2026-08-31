@@ -71,6 +71,17 @@ dbt_packages/
 target/
 logs/
 
+# Data and outputs
+data/raw/
+output/
+!data/sample/.gitkeep
+!output/.gitkeep
+spark-warehouse/
+.pytest_cache/
+.coverage
+htmlcov/
+*.log
+
 # Data files (local scratch / temporary)
 *.parquet
 *.orc
