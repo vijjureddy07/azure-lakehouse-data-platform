@@ -1,13 +1,15 @@
 """
 End-to-End Delta Lake Medallion Pipeline CLI (Module 3).
 
-Orchestrates the entire Medallion lifecycle:
+Orchestrates the Medallion batch lifecycle:
 1. Landing Discovery: Scans ADLS/local landing directories for pending batches.
 2. Bronze Ingestion: Ingests raw files to Delta tables with audit lineage and updates _ingestion_audit.
-3. Silver Transformation: Types, standardizes, deduplicates, and quarantines defective records.
-4. Delta MERGE: Demonstrates idempotent upsert processing.
-5. Gold Aggregations: Derives 6 business-ready analytical Delta tables.
-6. Quality & Reconciliation Audit: Proves zero silent data loss.
+3. Silver Transformation & Quality Reconciliation: Types, standardizes, deduplicates, quarantines defects,
+   and strictly verifies the mathematical reconciliation invariant (bronze == valid + quarantine).
+4. Gold Aggregations: Derives 6 business-ready analytical Delta tables.
+
+Note: Delta MERGE operations are implemented and tested as a dedicated modular capability in
+`src/medallion/merge.py` and interactive Databricks notebooks.
 
 Usage:
     python -m src.pipelines.delta_medallion_pipeline --scale small
@@ -45,15 +47,16 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def prepare_landing_data_if_needed(landing_root: Path, scale_cfg: ScaleConfig) -> None:
+def prepare_landing_data_if_needed(spark, landing_root: Path | str, scale_cfg: ScaleConfig) -> None:
     """If landing directory is empty, seed it with sample landing data structured by ADF path pattern."""
-    discovered = discover_landing_files(landing_root)
+    discovered = discover_landing_files(spark, landing_root)
     if discovered:
         logger.info("Found %d existing landing files in %s", len(discovered), landing_root)
         return
 
+    landing_path = Path(str(landing_root))
     logger.info("Landing directory is empty. Seeding synthetic landing files for scale: %s", scale_cfg.name)
-    temp_raw = landing_root / "_temp_seed"
+    temp_raw = landing_path / "_temp_seed"
     generate_all_datasets(scale_cfg, temp_raw)
 
     date_str = "2026-08-31"
@@ -62,7 +65,7 @@ def prepare_landing_data_if_needed(landing_root: Path, scale_cfg: ScaleConfig) -
     for file_path in temp_raw.glob("*"):
         if file_path.is_file():
             ds_name = file_path.stem.split(".")[0]
-            dest_dir = landing_root / "retail" / ds_name / f"ingestion_date={date_str}" / f"run_id={run_id}"
+            dest_dir = landing_path / "retail" / ds_name / f"ingestion_date={date_str}" / f"run_id={run_id}"
             dest_dir.mkdir(parents=True, exist_ok=True)
             target_path = dest_dir / file_path.name
             target_path.write_bytes(file_path.read_bytes())
@@ -74,8 +77,8 @@ def prepare_landing_data_if_needed(landing_root: Path, scale_cfg: ScaleConfig) -
 
 
 def run_delta_medallion_pipeline(
-    landing_root: Path = LANDING_DIR,
-    delta_root: Path = DELTA_DIR,
+    landing_root: Path | str = LANDING_DIR,
+    delta_root: Path | str = DELTA_DIR,
     scale_name: str = "small",
     force_all: bool = False,
 ) -> dict:
@@ -84,27 +87,30 @@ def run_delta_medallion_pipeline(
     ensure_directories()
     scale_cfg = SCALE_PRESETS.get(scale_name, SCALE_PRESETS["small"])
 
-    bronze_root = delta_root / "bronze"
-    silver_root = delta_root / "silver"
-    quarantine_root = delta_root / "silver" / "quarantine"
-    gold_root = delta_root / "gold"
+    landing_root_str = str(landing_root).rstrip("/")
+    delta_root_str = str(delta_root).rstrip("/")
+
+    bronze_root = f"{delta_root_str}/bronze"
+    silver_root = f"{delta_root_str}/silver"
+    quarantine_root = f"{delta_root_str}/silver/quarantine"
+    gold_root = f"{delta_root_str}/gold"
 
     print("=" * 75)
     print("STARTING DELTA LAKE MEDALLION LAKEHOUSE PIPELINE (MODULE 3)")
-    print(f"Scale: {scale_name} | Landing: {landing_root} | Delta Root: {delta_root}")
+    print(f"Scale: {scale_name} | Landing: {landing_root_str} | Delta Root: {delta_root_str}")
     print("=" * 75)
-
-    # Ensure landing files exist
-    prepare_landing_data_if_needed(landing_root, scale_cfg)
 
     spark = get_spark_session(SparkConfig(app_name="DeltaMedallionPipeline"))
 
     try:
+        # Ensure landing files exist
+        prepare_landing_data_if_needed(spark, landing_root, scale_cfg)
+
         # --- 1. BRONZE INGESTION ---
         print("\n--- STAGE 1: BRONZE DELTA INGESTION ---")
         bronze_counts = ingest_bronze_layer(
             spark=spark,
-            landing_root=landing_root,
+            landing_root=landing_root_str,
             bronze_root=bronze_root,
             force_all=force_all,
         )
@@ -158,8 +164,8 @@ def main():
 
     args = parser.parse_args()
     run_delta_medallion_pipeline(
-        landing_root=Path(args.landing_dir),
-        delta_root=Path(args.delta_dir),
+        landing_root=args.landing_dir,
+        delta_root=args.delta_dir,
         scale_name=args.scale,
         force_all=args.force_all,
     )

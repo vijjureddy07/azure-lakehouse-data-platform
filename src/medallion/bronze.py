@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from delta.tables import DeltaTable
 from pyspark.sql.functions import lit
 
 from src.medallion.discovery import (
@@ -52,15 +53,15 @@ def ingest_file_to_bronze(
 ) -> DataFrame:
     """
     Read a single landing file as raw strings and append lineage metadata columns.
+
+    For JSON files: Uses standard JSON Lines (newline-delimited JSON) reading without multiLine.
+    For CSV files: Preserves header and prevents schema inference.
     """
-    path_str = file_info.file_path.as_posix()
+    path_str = file_info.source_path
 
     if file_info.format == "json":
-        # Handle single JSON or multiline / JSON lines
-        try:
-            df = spark.read.option("multiline", "true").json(path_str)
-        except Exception:  # noqa: BLE001
-            df = spark.read.json(path_str)
+        # Standard JSON lines reading without multiLine option
+        df = spark.read.json(path_str)
     else:
         # Raw CSV: preserve everything as string to prevent silent type truncation
         df = spark.read.option("header", "true").option("inferSchema", "false").csv(path_str)
@@ -80,8 +81,8 @@ def ingest_file_to_bronze(
 
 def ingest_bronze_layer(
     spark: SparkSession,
-    landing_root: Path,
-    bronze_root: Path,
+    landing_root: Path | str,
+    bronze_root: Path | str,
     datasets: list[str] | None = None,
     force_all: bool = False,
 ) -> dict[str, int]:
@@ -92,8 +93,10 @@ def ingest_bronze_layer(
         dict[str, int]: Ingested row count per dataset.
     """
     target_datasets = datasets or DATASETS
-    audit_table_path = bronze_root / "_ingestion_audit"
-    discovered = discover_landing_files(landing_root, datasets=target_datasets)
+    bronze_root_str = str(bronze_root).rstrip("/")
+    audit_table_path = f"{bronze_root_str}/_ingestion_audit"
+
+    discovered = discover_landing_files(spark, landing_root, datasets=target_datasets)
 
     if force_all:
         pending_files = discovered
@@ -113,16 +116,16 @@ def ingest_bronze_layer(
     successfully_ingested_files: list[LandingFileInfo] = []
 
     for ds, file_list in files_by_dataset.items():
-        ds_bronze_path = bronze_root / ds
+        ds_bronze_path = f"{bronze_root_str}/{ds}"
         total_rows = 0
 
         for file_info in file_list:
-            logger.info("Ingesting %s from %s into Bronze", ds, file_info.file_path)
+            logger.info("Ingesting %s from %s into Bronze", ds, file_info.source_path)
             raw_bronze_df = ingest_file_to_bronze(spark, file_info)
             count = raw_bronze_df.count()
 
             # Append to Delta table
-            raw_bronze_df.write.format("delta").mode("append").save(str(ds_bronze_path))
+            raw_bronze_df.write.format("delta").mode("append").save(ds_bronze_path)
             total_rows += count
             successfully_ingested_files.append(file_info)
 
@@ -138,11 +141,11 @@ def ingest_bronze_layer(
 
 def load_bronze_table(
     spark: SparkSession,
-    bronze_root: Path,
+    bronze_root: Path | str,
     dataset_name: str,
 ) -> DataFrame:
     """Load a Bronze Delta table into a Spark DataFrame."""
-    table_path = bronze_root / dataset_name
-    if not table_path.exists():
+    table_path = f"{str(bronze_root).rstrip('/')}/{dataset_name}"
+    if not DeltaTable.isDeltaTable(spark, table_path):
         raise FileNotFoundError(f"Bronze Delta table not found at: {table_path}")
-    return spark.read.format("delta").load(str(table_path))
+    return spark.read.format("delta").load(table_path)

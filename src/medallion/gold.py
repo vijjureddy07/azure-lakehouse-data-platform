@@ -19,6 +19,7 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from delta.tables import DeltaTable
 from pyspark.sql.functions import (
     avg,
     coalesce,
@@ -281,14 +282,20 @@ def build_gold_return_performance(returns_df: DataFrame) -> DataFrame:
 
 def process_gold_layer(
     spark: SparkSession,
-    silver_root: Path,
-    gold_root: Path,
+    silver_root: Path | str,
+    gold_root: Path | str,
 ) -> dict[str, int]:
     """
     Build and persist all Gold Delta aggregate tables from Silver Delta tables.
     """
+    silver_root_str = str(silver_root).rstrip("/")
+    gold_root_str = str(gold_root).rstrip("/")
+
     def load_s(table: str) -> DataFrame:
-        return spark.read.format("delta").load(str(silver_root / table))
+        path = f"{silver_root_str}/{table}"
+        if not DeltaTable.isDeltaTable(spark, path):
+            raise FileNotFoundError(f"Silver Delta table not found at: {path}")
+        return spark.read.format("delta").load(path)
 
     customers = load_s("customers")
     products = load_s("products")
@@ -301,33 +308,33 @@ def process_gold_layer(
 
     # 1. Daily Sales
     df_daily = build_gold_daily_sales(orders, items, products, returns)
-    df_daily.write.format("delta").mode("overwrite").save(str(gold_root / "gold_daily_sales_performance"))
+    df_daily.write.format("delta").mode("overwrite").save(f"{gold_root_str}/gold_daily_sales_performance")
     counts["gold_daily_sales_performance"] = df_daily.count()
 
     # 2. Monthly Revenue
     df_monthly = build_gold_monthly_revenue(orders, items, returns)
-    df_monthly.write.format("delta").mode("overwrite").save(str(gold_root / "gold_monthly_revenue"))
+    df_monthly.write.format("delta").mode("overwrite").save(f"{gold_root_str}/gold_monthly_revenue")
     counts["gold_monthly_revenue"] = df_monthly.count()
 
     # 3. Store Region Revenue
     df_store = build_gold_revenue_by_store_region(orders, items, stores)
-    df_store.write.format("delta").mode("overwrite").save(str(gold_root / "gold_revenue_by_store_region"))
+    df_store.write.format("delta").mode("overwrite").save(f"{gold_root_str}/gold_revenue_by_store_region")
     counts["gold_revenue_by_store_region"] = df_store.count()
 
     # 4. Category Performance
     df_cat = build_gold_category_performance(items, products, returns)
-    df_cat.write.format("delta").mode("overwrite").save(str(gold_root / "gold_category_revenue_performance"))
+    df_cat.write.format("delta").mode("overwrite").save(f"{gold_root_str}/gold_category_revenue_performance")
     counts["gold_category_revenue_performance"] = df_cat.count()
 
     # 5. Customer Spending Summary
     df_cust_spend = build_gold_customer_spending(customers, orders, items)
-    df_cust_spend.write.format("delta").mode("overwrite").save(str(gold_root / "gold_customer_spending_summary"))
+    df_cust_spend.write.format("delta").mode("overwrite").save(f"{gold_root_str}/gold_customer_spending_summary")
     counts["gold_customer_spending_summary"] = df_cust_spend.count()
 
     # 6. Return Refund Performance
     df_ret_perf = build_gold_return_performance(returns)
-    df_ret_perf.write.format("delta").mode("overwrite").save(str(gold_root / "gold_return_refund_performance"))
+    df_ret_perf.write.format("delta").mode("overwrite").save(f"{gold_root_str}/gold_return_refund_performance")
     counts["gold_return_refund_performance"] = df_ret_perf.count()
 
-    logger.info("Gold analytical aggregations successfully persisted to %s", gold_root)
+    logger.info("Gold analytical aggregations successfully persisted to %s", gold_root_str)
     return counts

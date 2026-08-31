@@ -11,32 +11,33 @@
 # MAGIC - Attaches metadata audit columns (`_source_file`, `_source_path`, `_ingestion_date`, `_adf_run_id`, `_ingested_timestamp`)
 # MAGIC - Maintains an immutable Delta audit log (`bronze._ingestion_audit`) preventing duplicate ingestion on reruns
 # MAGIC - Ingests all 8 datasets: `customers`, `products`, `stores`, `employees`, `orders`, `order_items`, `payments`, `returns`
+# MAGIC - Registers external Delta tables in Unity Catalog under `<catalog>.bronze.<dataset>`
 
 # COMMAND ----------
 
 # DBTITLE 1,Widget Parameters
 dbutils.widgets.text("catalog_name", "retail_lakehouse", "Catalog Name")
-dbutils.widgets.text("landing_base_path", "/mnt/lakehouse/landing/retail", "Landing Base Path")
+dbutils.widgets.text("storage_account_name", "stlakehousedev", "ADLS Gen2 Storage Account")
+dbutils.widgets.text("container_name", "lakehouse", "Container Name")
 dbutils.widgets.dropdown("force_all", "false", ["true", "false"], "Force All Ingestion")
 
 catalog_name = dbutils.widgets.get("catalog_name")
-landing_base_path = dbutils.widgets.get("landing_base_path")
+storage_account = dbutils.widgets.get("storage_account_name")
+container = dbutils.widgets.get("container_name")
 force_all = dbutils.widgets.get("force_all").lower() == "true"
+
+storage_base = f"abfss://{container}@{storage_account}.dfs.core.windows.net"
+landing_root = f"{storage_base}/landing"
+bronze_root = f"{storage_base}/delta/bronze"
 
 spark.sql(f"USE CATALOG {catalog_name}")
 spark.sql("USE SCHEMA bronze")
 
 # COMMAND ----------
 
-# DBTITLE 1,Import Medallion Ingestion Logic
-from pathlib import Path
-
+# DBTITLE 1,Import Medallion Ingestion Logic & Ingest Bronze Layer
 from src.medallion.bronze import ingest_bronze_layer
-
-# In Databricks workspace with Repo / Wheel installed:
-# Bronze ingestion handles incremental file discovery and audit logging
-bronze_root = Path("/mnt/lakehouse/delta/bronze")
-landing_root = Path(landing_base_path)
+from src.medallion.catalog import register_medallion_tables_in_catalog
 
 counts = ingest_bronze_layer(
     spark=spark,
@@ -47,6 +48,9 @@ counts = ingest_bronze_layer(
 
 for dataset_name, row_count in counts.items():
     print(f"Ingested {dataset_name}: +{row_count:,} rows")
+
+# Register external Delta tables into Unity Catalog
+register_medallion_tables_in_catalog(spark, catalog_name, f"{storage_base}/delta")
 
 # COMMAND ----------
 

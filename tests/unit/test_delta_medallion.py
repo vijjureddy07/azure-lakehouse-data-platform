@@ -2,20 +2,28 @@
 Unit Tests for Module 3: Azure Databricks + Delta Lake + Medallion Lakehouse.
 
 Validates:
-1. Delta Lake write, read, and append functionality.
-2. Ingestion audit logging and incremental landing file discovery.
-3. Bronze lineage metadata columns (_source_file, _source_path, _ingestion_date, _adf_run_id, _ingested_timestamp).
-4. Silver cleaning, typing, Decimal financial precision, deduplication, and referential integrity validation.
-5. Silver quarantine routing and reconciliation invariant (bronze == silver_valid + quarantine).
-6. Idempotent Delta MERGE operations (initial insert, no-op rerun, updated records, unaffected records).
-7. Delta table history (DESCRIBE HISTORY) and Time Travel queries (VERSION AS OF).
-8. Schema enforcement failure and controlled schema evolution (mergeSchema = true).
-9. Gold analytical KPI aggregations correctness.
+1. Delta Lake write, read, and history inspection.
+2. Ingestion audit logging and incremental landing file discovery (local and cloud ABFSS path parsing).
+3. Multi-record JSON Lines Bronze ingestion without multiLine bug.
+4. Bronze lineage metadata columns (_source_file, _source_path, _ingestion_date, _adf_run_id, _ingested_timestamp).
+5. Exact financial discount calculation (discount_amount = qty * price * discount_percent) and Gold revenue flow.
+6. Deterministic deduplication with content-hash tie-breaking across identical timestamps.
+7. Silver quarantine routing and runtime reconciliation validator (passing + intentional failure raising ReconciliationError).
+8. Idempotent Delta MERGE operations using actual Silver schema.
+9. Delta table history (DESCRIBE HISTORY) and Time Travel queries (VERSION AS OF).
+10. Schema enforcement failure and controlled schema evolution (mergeSchema = true).
+11. Delta table existence verification via DeltaTable.isDeltaTable.
+12. Unity Catalog registration SQL generation across the 3-level namespace.
+13. Gold analytical KPI aggregations correctness.
 """
 
 from __future__ import annotations
 
+from datetime import date, datetime, timezone
+from decimal import Decimal
+
 import pytest
+from delta.tables import DeltaTable
 from pyspark.sql.types import (
     DateType,
     DecimalType,
@@ -33,17 +41,24 @@ from src.delta.features import (
     query_time_travel_by_version,
 )
 from src.medallion.bronze import ingest_bronze_layer, load_bronze_table
+from src.medallion.catalog import generate_unity_catalog_registration_sql
 from src.medallion.discovery import (
     discover_landing_files,
     filter_uningested_files,
+    parse_landing_path,
     record_ingested_files,
 )
 from src.medallion.gold import (
+    build_gold_daily_sales,
     process_gold_layer,
 )
-from src.medallion.merge import upsert_delta_table
+from src.medallion.merge import upsert_customers, upsert_delta_table
 from src.medallion.silver import (
+    ReconciliationError,
     process_silver_layer,
+    transform_silver_customers,
+    transform_silver_order_items,
+    validate_silver_reconciliation,
 )
 
 
@@ -101,10 +116,38 @@ def test_delta_write_read_and_history(spark, tmp_path):
     assert commits[0]["version"] == 0
 
 
+def test_multi_record_json_lines_bronze_ingestion(spark, tmp_path):
+    """
+    Regression Test: Verify that newline-delimited JSON (JSON Lines) with multiple
+    records is ingested in its entirety into Bronze without multiLine collapsing records.
+    """
+    landing_dir = tmp_path / "landing_jsonl"
+    dest = landing_dir / "retail" / "payments" / "ingestion_date=2026-08-31" / "run_id=test-jsonl"
+    dest.mkdir(parents=True, exist_ok=True)
+    jsonl_file = dest / "payments.json"
+
+    # Write 5 distinct JSON Lines records
+    lines = [
+        '{"payment_id": "PAY-001", "order_id": "ORD-001", "payment_timestamp": "2026-08-31 10:00:00", "payment_method": "CREDIT_CARD", "payment_status": "SUCCESS", "payment_amount": 50.00, "transaction_reference": "TXN-001"}',
+        '{"payment_id": "PAY-002", "order_id": "ORD-002", "payment_timestamp": "2026-08-31 10:05:00", "payment_method": "DEBIT_CARD", "payment_status": "SUCCESS", "payment_amount": 75.50, "transaction_reference": "TXN-002"}',
+        '{"payment_id": "PAY-003", "order_id": "ORD-003", "payment_timestamp": "2026-08-31 10:10:00", "payment_method": "PAYPAL", "payment_status": "SUCCESS", "payment_amount": 120.00, "transaction_reference": "TXN-003"}',
+        '{"payment_id": "PAY-004", "order_id": "ORD-004", "payment_timestamp": "2026-08-31 10:15:00", "payment_method": "APPLE_PAY", "payment_status": "SUCCESS", "payment_amount": 35.25, "transaction_reference": "TXN-004"}',
+        '{"payment_id": "PAY-005", "order_id": "ORD-005", "payment_timestamp": "2026-08-31 10:20:00", "payment_method": "CREDIT_CARD", "payment_status": "SUCCESS", "payment_amount": 200.00, "transaction_reference": "TXN-005"}',
+    ]
+    jsonl_file.write_text("\n".join(lines), encoding="utf-8")
+
+    bronze_root = tmp_path / "bronze_jsonl"
+    counts = ingest_bronze_layer(spark, landing_dir, bronze_root, datasets=["payments"])
+
+    assert counts["payments"] == 5, f"Expected 5 payments ingested from JSON Lines, got {counts['payments']}"
+    bronze_df = load_bronze_table(spark, bronze_root, "payments")
+    assert bronze_df.count() == 5
+
+
 def test_landing_discovery_and_audit_tracking(spark, sample_landing_dir, tmp_path):
     """Test landing file discovery and incremental audit tracking."""
     audit_table_path = tmp_path / "audit_log"
-    discovered = discover_landing_files(sample_landing_dir)
+    discovered = discover_landing_files(spark, sample_landing_dir)
     assert len(discovered) == 8
 
     # Verify discovery metadata extraction
@@ -126,6 +169,23 @@ def test_landing_discovery_and_audit_tracking(spark, sample_landing_dir, tmp_pat
     assert len(pending_after) == 4
 
 
+def test_landing_path_parsing_cloud_and_local():
+    """Test landing path parser against both local filesystem paths and cloud ABFSS URIs."""
+    cloud_uri = "abfss://lakehouse@stlakehousedev.dfs.core.windows.net/landing/retail/customers/ingestion_date=2026-08-31/run_id=adf-run-999/customers.csv"
+    ds, date_str, run_id, filename, fmt = parse_landing_path(cloud_uri)
+    assert ds == "customers"
+    assert date_str == "2026-08-31"
+    assert run_id == "adf-run-999"
+    assert filename == "customers.csv"
+    assert fmt == "csv"
+
+    json_uri = "abfss://lakehouse@stlakehousedev.dfs.core.windows.net/landing/retail/payments/ingestion_date=2026-08-31/run_id=adf-run-888/payments.json"
+    ds2, _, _, filename2, fmt2 = parse_landing_path(json_uri)
+    assert ds2 == "payments"
+    assert filename2 == "payments.json"
+    assert fmt2 == "json"
+
+
 def test_bronze_layer_ingestion(spark, sample_landing_dir, tmp_path):
     """Test Bronze ingestion across all 8 datasets and lineage column presence."""
     bronze_root = tmp_path / "bronze"
@@ -144,6 +204,90 @@ def test_bronze_layer_ingestion(spark, sample_landing_dir, tmp_path):
     # Rerun should be idempotent and ingest 0 new rows
     rerun_counts = ingest_bronze_layer(spark, sample_landing_dir, bronze_root)
     assert all(c == 0 for c in rerun_counts.values())
+
+
+def test_silver_order_items_discount_calculation_and_gold_flow(spark):
+    """
+    Exact Financial Correctness Test:
+    quantity = 2, unit_price = 50.00, discount_percent = 0.10 (10%)
+    Expected: gross = 100.00, discount_amount = 10.00, net_amount = 90.00.
+    Verifies that discount_percent is NOT divided by 100 again and flows accurately into Gold.
+    """
+    bronze_items_data = [
+        ("ITEM-001", "ORD-001", "PROD-001", "2", "50.00", "0.10", "items.csv", "/path", "2026-08-31", "run-1", datetime.now(timezone.utc)),
+    ]
+    bronze_items_df = spark.createDataFrame(
+        bronze_items_data,
+        ["order_item_id", "order_id", "product_id", "quantity", "unit_price", "discount_percent", "_source_file", "_source_path", "_ingestion_date", "_adf_run_id", "_ingested_timestamp"],
+    )
+
+    valid_orders = spark.createDataFrame([("ORD-001", date(2026, 8, 31), "COMPLETED")], ["order_id", "order_date", "order_status"])
+    valid_products = spark.createDataFrame([("PROD-001", Decimal("25.00"), "Electronics", "Audio")], ["product_id", "cost_price", "category", "subcategory"])
+    empty_returns = spark.createDataFrame([], "order_item_id STRING, refund_amount DECIMAL(10,2), return_id STRING")
+
+    valid_items_df, quarantine_items_df = transform_silver_order_items(bronze_items_df, valid_orders, valid_products)
+
+    assert quarantine_items_df.count() == 0
+    assert valid_items_df.count() == 1
+
+    row = valid_items_df.collect()[0]
+    assert row["quantity"] == 2
+    assert row["unit_price"] == Decimal("50.00")
+    assert row["discount_percent"] == Decimal("0.10")
+    assert row["discount_amount"] == Decimal("10.00")
+    assert row["net_amount"] == Decimal("90.00")
+
+    # Verify Gold daily sales aggregation receives exact net sales (90.00) and discounts (10.00)
+    gold_daily = build_gold_daily_sales(valid_orders, valid_items_df, valid_products, empty_returns)
+    gold_row = gold_daily.collect()[0]
+    assert gold_row["gross_revenue"] == Decimal("100.00")
+    assert gold_row["total_discounts"] == Decimal("10.00")
+    assert gold_row["net_sales"] == Decimal("90.00")
+    assert gold_row["total_cogs"] == Decimal("50.00")  # 2 * 25.00
+    assert gold_row["gross_profit"] == Decimal("40.00")  # 90.00 - 50.00
+
+
+def test_deterministic_deduplication(spark):
+    """
+    Verify that two records with the same primary key and same ingestion timestamp
+    use the deterministic content hash tie-breaker to select the exact same winner every run.
+    """
+    ts = datetime(2026, 8, 31, 12, 0, 0, tzinfo=timezone.utc)
+    bronze_data = [
+        ("CUST-DUP", "Alice", "Smith", "alice.primary@example.com", "555-0101", "100 Main St", "Dallas", "TX", "75001", "USA", "2026-01-01", "GOLD", "f.csv", "/p", "2026-08-31", "r1", ts),
+        ("CUST-DUP", "Alice", "Smith", "alice.secondary@example.com", "555-0102", "100 Main St", "Dallas", "TX", "75001", "USA", "2026-01-01", "GOLD", "f.csv", "/p", "2026-08-31", "r1", ts),
+    ]
+    cols = ["customer_id", "first_name", "last_name", "email", "phone", "address", "city", "state", "postal_code", "country", "signup_date", "loyalty_tier", "_source_file", "_source_path", "_ingestion_date", "_adf_run_id", "_ingested_timestamp"]
+
+    # Run 1: Order A
+    df_run1 = spark.createDataFrame(bronze_data, cols)
+    valid1, quar1 = transform_silver_customers(df_run1)
+    winner1 = valid1.collect()[0]["email"]
+
+    # Run 2: Order B (reversed insertion)
+    df_run2 = spark.createDataFrame(list(reversed(bronze_data)), cols)
+    valid2, quar2 = transform_silver_customers(df_run2)
+    winner2 = valid2.collect()[0]["email"]
+
+    assert winner1 == winner2, "Deterministic deduplication must select identical winner regardless of row scan order"
+    assert quar1.count() == 1
+    assert quar2.count() == 1
+
+
+def test_silver_reconciliation_validator():
+    """Test runtime reconciliation validator passing and failing cases."""
+    # Passing case: bronze == valid + quarantine
+    validate_silver_reconciliation("orders", bronze_count=100, valid_count=92, quarantine_count=8)
+
+    # Intentionally failing case: mismatch raises ReconciliationError with exact counts
+    with pytest.raises(ReconciliationError) as exc_info:
+        validate_silver_reconciliation("orders", bronze_count=100, valid_count=90, quarantine_count=5)
+
+    msg = str(exc_info.value)
+    assert "orders" in msg
+    assert "100" in msg
+    assert "90" in msg
+    assert "5" in msg
 
 
 def test_silver_layer_transformation_and_reconciliation(spark, sample_landing_dir, tmp_path):
@@ -172,7 +316,6 @@ def test_silver_layer_transformation_and_reconciliation(spark, sample_landing_di
     assert isinstance(silver_items.schema["unit_price"].dataType, DecimalType)
     assert isinstance(silver_items.schema["net_amount"].dataType, DecimalType)
     assert isinstance(silver_items.schema["quantity"].dataType, IntegerType)
-
 
 
 def test_delta_merge_idempotency_and_updates(spark, tmp_path):
@@ -216,6 +359,66 @@ def test_delta_merge_idempotency_and_updates(spark, tmp_path):
     # Verify Charlie (customer 3) is inserted
     charlie = df_result.filter(df_result.customer_id == 3).collect()[0]
     assert charlie["first_name"] == "Charlie"
+
+
+def test_upsert_customers_actual_schema(spark, tmp_path):
+    """Test upsert_customers using the exact conformed Silver customer schema."""
+    table_path = tmp_path / "silver_cust_merge"
+    cols = ["customer_id", "first_name", "last_name", "email", "phone", "address", "city", "state", "postal_code", "country", "signup_date", "loyalty_tier"]
+
+    init_data = [
+        ("C-001", "John", "Doe", "john@example.com", "555-0100", "123 Main St", "Dallas", "TX", "75001", "US", date(2026, 1, 1), "STANDARD"),
+        ("C-002", "Jane", "Smith", "jane@example.com", "555-0200", "456 Oak Ave", "Austin", "TX", "78701", "US", date(2026, 2, 1), "STANDARD"),
+    ]
+    df_init = spark.createDataFrame(init_data, cols)
+    df_init.write.format("delta").mode("overwrite").save(str(table_path))
+
+    # Update C-001 to PLATINUM and add C-003
+    update_data = [
+        ("C-001", "John", "Doe", "john.updated@example.com", "555-0100", "123 Main St", "Dallas", "TX", "75001", "US", date(2026, 1, 1), "PLATINUM"),
+        ("C-003", "Bob", "Brown", "bob@example.com", "555-0300", "789 Pine St", "Houston", "TX", "77001", "US", date(2026, 3, 1), "GOLD"),
+    ]
+    df_update = spark.createDataFrame(update_data, cols)
+    upsert_customers(spark, table_path, df_update)
+
+    df_post = spark.read.format("delta").load(str(table_path))
+    assert df_post.count() == 3
+
+    c1 = df_post.filter(df_post.customer_id == "C-001").collect()[0]
+    assert c1["loyalty_tier"] == "PLATINUM"
+    assert c1["email"] == "john.updated@example.com"
+
+    # Re-run same update -> Count must remain 3 (idempotent)
+    upsert_customers(spark, table_path, df_update)
+    assert spark.read.format("delta").load(str(table_path)).count() == 3
+
+
+def test_delta_table_existence_check(spark, tmp_path):
+    """Test DeltaTable.isDeltaTable identification on real and empty paths."""
+    real_delta = tmp_path / "is_delta_true"
+    spark.createDataFrame([(1, "A")], ["id", "val"]).write.format("delta").save(str(real_delta))
+    assert DeltaTable.isDeltaTable(spark, str(real_delta)) is True
+
+    non_delta = tmp_path / "not_delta"
+    non_delta.mkdir()
+    assert DeltaTable.isDeltaTable(spark, str(non_delta)) is False
+
+
+def test_unity_catalog_registration_sql_generation():
+    """Test generation of Unity Catalog external table registration SQL."""
+    statements = generate_unity_catalog_registration_sql(
+        catalog_name="retail_lakehouse",
+        delta_root_uri="abfss://lakehouse@stlakehousedev.dfs.core.windows.net/delta",
+    )
+    assert len(statements) >= 32  # 1 catalog + 3 schemas + 8 bronze + 8 silver + 8 quarantine + 6 gold = 34 statements
+
+    joined = "\n".join(statements)
+    assert "CREATE CATALOG IF NOT EXISTS retail_lakehouse;" in joined
+    assert "CREATE SCHEMA IF NOT EXISTS retail_lakehouse.bronze;" in joined
+    assert "CREATE TABLE IF NOT EXISTS retail_lakehouse.bronze.customers USING DELTA LOCATION 'abfss://lakehouse@stlakehousedev.dfs.core.windows.net/delta/bronze/customers';" in joined
+    assert "CREATE TABLE IF NOT EXISTS retail_lakehouse.silver.customers USING DELTA LOCATION 'abfss://lakehouse@stlakehousedev.dfs.core.windows.net/delta/silver/customers';" in joined
+    assert "CREATE TABLE IF NOT EXISTS retail_lakehouse.silver.quarantine_customers USING DELTA LOCATION 'abfss://lakehouse@stlakehousedev.dfs.core.windows.net/delta/silver/quarantine/customers';" in joined
+    assert "CREATE TABLE IF NOT EXISTS retail_lakehouse.gold.gold_daily_sales_performance USING DELTA LOCATION 'abfss://lakehouse@stlakehousedev.dfs.core.windows.net/delta/gold/gold_daily_sales_performance';" in joined
 
 
 def test_delta_time_travel(spark, tmp_path):

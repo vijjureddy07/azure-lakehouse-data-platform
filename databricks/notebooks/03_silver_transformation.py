@@ -9,16 +9,28 @@
 # MAGIC
 # MAGIC ### Engineering Rules:
 # MAGIC - **Strong Typing:** Cast strings to `TimestampType`, `DateType`, `IntegerType`, `DecimalType(10,2)`.
-# MAGIC - **Deduplication:** Window `row_number()` over primary keys ordered by ingestion timestamp.
+# MAGIC - **Deterministic Deduplication:** Window `row_number()` over primary keys ordered by `_ingested_timestamp DESC, _row_hash ASC`.
+# MAGIC - **Financial Accuracy:** `discount_amount = quantity * unit_price * discount_percent` (no extra / 100).
 # MAGIC - **Referential Integrity:** Anti-join validation against parent dimensions (customers, stores, products, orders).
 # MAGIC - **Quarantine Routing:** Non-conforming rows written to `silver_quarantine_<dataset>` with detailed reason codes.
+# MAGIC - **Runtime Reconciliation:** Strict verification that `bronze_count == silver_valid_count + quarantine_count`.
 # MAGIC - **Delta MERGE:** Idempotent upsert capability for customer, product, and order dimensions.
 
 # COMMAND ----------
 
 # DBTITLE 1,Widget Parameters
 dbutils.widgets.text("catalog_name", "retail_lakehouse", "Catalog Name")
+dbutils.widgets.text("storage_account_name", "stlakehousedev", "ADLS Gen2 Storage Account")
+dbutils.widgets.text("container_name", "lakehouse", "Container Name")
+
 catalog_name = dbutils.widgets.get("catalog_name")
+storage_account = dbutils.widgets.get("storage_account_name")
+container = dbutils.widgets.get("container_name")
+
+storage_base = f"abfss://{container}@{storage_account}.dfs.core.windows.net"
+bronze_root = f"{storage_base}/delta/bronze"
+silver_root = f"{storage_base}/delta/silver"
+quarantine_root = f"{storage_base}/delta/silver/quarantine"
 
 spark.sql(f"USE CATALOG {catalog_name}")
 spark.sql("USE SCHEMA silver")
@@ -26,13 +38,8 @@ spark.sql("USE SCHEMA silver")
 # COMMAND ----------
 
 # DBTITLE 1,Execute Silver Transformations
-from pathlib import Path
-
+from src.medallion.catalog import register_medallion_tables_in_catalog
 from src.medallion.silver import process_silver_layer
-
-bronze_root = Path("/mnt/lakehouse/delta/bronze")
-silver_root = Path("/mnt/lakehouse/delta/silver")
-quarantine_root = Path("/mnt/lakehouse/delta/silver/quarantine")
 
 metrics = process_silver_layer(
     spark=spark,
@@ -48,21 +55,38 @@ for ds, m in metrics.items():
     print(f"{ds:<15} | {m['bronze']:<10} | {m['silver_valid']:<12} | {m['quarantine']:<10}")
 print("=" * 60)
 
+# Register external Delta tables into Unity Catalog
+register_medallion_tables_in_catalog(spark, catalog_name, f"{storage_base}/delta")
+
 # COMMAND ----------
 
-# DBTITLE 1,Demonstrate Delta MERGE / Upsert
+# DBTITLE 1,Demonstrate Delta MERGE / Upsert on Actual Silver Customer Schema
+from pyspark.sql.functions import lit
+
 from src.medallion.merge import upsert_customers
 
-# Upsert demonstration
-sample_customer_update = spark.createDataFrame(
-    [(1, "John", "Doe", "john.doe.updated@example.com", "555-0100", "123 Main St", "Dallas", "TX", "75001", "USA", "2026-01-01 10:00:00", "ACTIVE", "PLATINUM")],
-    ["customer_id", "first_name", "last_name", "email", "phone", "street_address", "city", "state", "zip_code", "country", "account_created_at", "status", "loyalty_tier"]
-)
+# Read an existing Silver customer, preserving full schema
+existing_customer = spark.read.format("delta").load(f"{silver_root}/customers").limit(1)
+initial_count = spark.read.format("delta").load(f"{silver_root}/customers").count()
 
+# Modify loyalty_tier
+customer_update_df = existing_customer.withColumn("loyalty_tier", lit("PLATINUM"))
+
+# 1. Execute Upsert
 upsert_customers(
     spark=spark,
-    silver_customers_path=silver_root / "customers",
-    incoming_customers_df=sample_customer_update,
+    silver_customers_path=f"{silver_root}/customers",
+    incoming_customers_df=customer_update_df,
 )
 
-print("Idempotent Delta MERGE successfully applied to Silver Customers.")
+# 2. Verify Rerun Idempotency (re-run exact same MERGE)
+upsert_customers(
+    spark=spark,
+    silver_customers_path=f"{silver_root}/customers",
+    incoming_customers_df=customer_update_df,
+)
+
+post_merge_count = spark.read.format("delta").load(f"{silver_root}/customers").count()
+assert initial_count == post_merge_count, "Rerun MERGE must not produce duplicate records"
+
+print(f"Idempotent Delta MERGE successfully verified. Total Silver Customers count maintained at: {post_merge_count}")

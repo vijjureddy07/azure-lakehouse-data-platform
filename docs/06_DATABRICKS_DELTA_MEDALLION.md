@@ -32,7 +32,7 @@ Azure Databricks is an enterprise-grade analytics platform built on Apache Spark
 ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
 │                        AZURE DATA LAKE STORAGE GEN2 (ADLS Gen2)                                  │
 │  - Landing Zone: landing/retail/<dataset>/ingestion_date=<yyyy-MM-dd>/run_id=<run_id>/<file>     │
-│  - Delta Lake Storage: output/delta/ (bronze/, silver/, silver/quarantine/, gold/)              │
+│  - Delta Lake Storage: delta/ (bronze/, silver/, silver/quarantine/, gold/)                      │
 └──────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -65,20 +65,22 @@ Every Delta table maintains a `_delta_log/` directory containing ordered, zero-p
 │                                          THE MEDALLION LIFECYCLE                                           │
 │                                                                                                            │
 │  [ ADLS Gen2 Landing Zone ]                                                                                │
-│  - Immutable external raw CSV / JSON files as landed by Azure Data Factory                                 │
+│  - Immutable external raw CSV / JSON Lines files as landed by Azure Data Factory                           │
 │  - Organized by: landing/retail/<dataset>/ingestion_date=<yyyy-MM-dd>/run_id=<run_id>/<file>               │
 │               │                                                                                            │
 │               ▼ (Incremental Discovery & Audit Log: bronze._ingestion_audit)                               │
 │  [ Bronze Layer: retail_lakehouse.bronze ]                                                                 │
-│  - Raw Delta tables preserving exact source fidelity                                                       │
+│  - Raw Delta tables preserving exact source fidelity (Standard JSON Lines reading)                         │
 │  - System lineage metadata attached: _source_file, _source_path, _ingestion_date, _adf_run_id, _ingested_ts │
 │  - Zero data loss: Defective records are NOT dropped prematurely                                           │
 │               │                                                                                            │
-│               ▼ (Strong Typing, Deduplication, Referential Integrity, Defect Classification)               │
+│               ▼ (Strong Typing, Deterministic Deduplication, Decimal Precision, Defect Routing)            │
 │  [ Silver Layer: retail_lakehouse.silver ]                                                                 │
 │  - Strongly-typed schemas (Decimal financial precision, DateType, TimestampType)                           │
+│  - Deterministic tie-breaking: Window ROW_NUMBER ordered by _ingested_timestamp DESC, _row_hash ASC        │
+│  - Financial precision: discount_amount = quantity * unit_price * discount_percent                         │
 │  - Quality quarantine routing: Non-conforming rows written to silver_quarantine_<dataset>                  │
-│  - Mathematical reconciliation invariant: bronze_count == silver_valid_count + quarantine_count            │
+│  - Runtime Reconciliation: Strictly enforces bronze_count == silver_valid_count + quarantine_count         │
 │  - Delta MERGE: Idempotent upsert by business primary key                                                  │
 │               │                                                                                            │
 │               ▼ (Business KPI Aggregation & Metrics)                                                       │
@@ -139,6 +141,7 @@ Unity Catalog provides unified data governance across all Databricks workspaces:
 
 ### ZERO-STORED-CREDENTIAL SECURITY MODEL
 - **No Hard-Coded Keys:** Never store Azure storage access keys, SAS tokens, or secrets in notebooks.
+- **No DBFS Mounts:** Direct ABFSS URI access backed by Unity Catalog External Locations.
 - **Azure Databricks Access Connector:** A dedicated Azure Managed Identity (`Microsoft.Databricks/accessConnectors`) assigned the `Storage Blob Data Contributor` RBAC role on ADLS Gen2.
 - **Unity Catalog Storage Credential & External Location:**
   ```sql
@@ -150,6 +153,19 @@ Unity Catalog provides unified data governance across all Databricks workspaces:
   WITH (STORAGE CREDENTIAL cred_adls_lakehouse);
   ```
 
+### EXTERNAL TABLE REGISTRATION
+Delta tables written to external storage paths are registered into Unity Catalog using idempotent DDL:
+```sql
+CREATE TABLE IF NOT EXISTS retail_lakehouse.bronze.customers
+USING DELTA LOCATION 'abfss://lakehouse@stlakehousedev.dfs.core.windows.net/delta/bronze/customers';
+
+CREATE TABLE IF NOT EXISTS retail_lakehouse.silver.customers
+USING DELTA LOCATION 'abfss://lakehouse@stlakehousedev.dfs.core.windows.net/delta/silver/customers';
+
+CREATE TABLE IF NOT EXISTS retail_lakehouse.gold.gold_daily_sales_performance
+USING DELTA LOCATION 'abfss://lakehouse@stlakehousedev.dfs.core.windows.net/delta/gold/gold_daily_sales_performance';
+```
+
 ---
 
 ## 6. Interview Questions & Expected Answers
@@ -159,8 +175,8 @@ Unity Catalog provides unified data governance across all Databricks workspaces:
 
 ### EXPECTED ANSWER
 > "In our architecture, Azure Data Factory lands external raw files into ADLS Gen2 under a dynamic immutable directory pattern partitioned by date and ADF RunId. In Databricks, an incremental discovery scanner detects newly landed files by checking against a Delta ingestion audit log (`bronze._ingestion_audit`), preventing duplicate ingestion on pipeline reruns.
-> 1. **Bronze Layer:** Files are ingested as raw strings into Delta tables with system lineage metadata (`_source_file`, `_source_path`, `_ingestion_date`, `_adf_run_id`, `_ingested_timestamp`), preserving raw source fidelity without premature drops.
-> 2. **Silver Layer:** Bronze tables are transformed into conformed Delta tables with explicit typed schemas (using Decimal precision for financials), window-ranked deduplication, and referential anti-joins against validated dimension tables. Defective rows are isolated in `silver_quarantine_<dataset>` tables, preserving strict mathematical reconciliation (`bronze == valid + quarantine`).
+> 1. **Bronze Layer:** Files are ingested as raw strings (using standard JSON Lines parsing for payments) into Delta tables with system lineage metadata (`_source_file`, `_source_path`, `_ingestion_date`, `_adf_run_id`, `_ingested_timestamp`), preserving raw source fidelity without premature drops.
+> 2. **Silver Layer:** Bronze tables are transformed into conformed Delta tables with explicit typed schemas (using Decimal precision for financials), deterministic window-ranked deduplication (`_ingested_timestamp DESC, _row_hash ASC`), exact discount arithmetic, and referential anti-joins against validated dimension tables. Defective rows are isolated in `silver_quarantine_<dataset>` tables, strictly verified at runtime by a reconciliation validator (`bronze == valid + quarantine`).
 > 3. **Gold Layer:** Business-ready aggregate Delta tables (such as daily sales performance, customer lifetime spend, and store regional revenue) are computed strictly from Silver tables for reporting and analytics."
 
 ---

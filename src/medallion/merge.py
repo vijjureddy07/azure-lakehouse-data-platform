@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 def upsert_delta_table(
     spark: SparkSession,
-    target_table_path: Path,
+    target_table_path: Path | str,
     source_df: DataFrame,
     primary_key: str,
     update_condition: str | None = None,
@@ -41,17 +41,18 @@ def upsert_delta_table(
 
     Args:
         spark: Active SparkSession.
-        target_table_path: Path to existing target Delta table.
+        target_table_path: Path/URI to existing target Delta table.
         source_df: DataFrame containing incoming updates and new inserts.
         primary_key: Name of the primary key column to match on.
         update_condition: Optional SQL condition for updating matched rows (e.g. 'source.updated_at > target.updated_at').
     """
-    if not target_table_path.exists():
-        logger.info("Target Delta table does not exist at %s. Initializing with source data.", target_table_path)
-        source_df.write.format("delta").mode("overwrite").save(str(target_table_path))
+    path_str = str(target_table_path)
+    if not DeltaTable.isDeltaTable(spark, path_str):
+        logger.info("Target Delta table does not exist at %s. Initializing with source data.", path_str)
+        source_df.write.format("delta").mode("overwrite").save(path_str)
         return
 
-    delta_target = DeltaTable.forPath(spark, str(target_table_path))
+    delta_target = DeltaTable.forPath(spark, path_str)
     match_expr = f"target.{primary_key} = source.{primary_key}"
 
     merge_builder = delta_target.alias("target").merge(
@@ -67,12 +68,12 @@ def upsert_delta_table(
     merge_builder = merge_builder.whenNotMatchedInsertAll()
     merge_builder.execute()
 
-    logger.info("Successfully executed Delta MERGE on %s matching on %s", target_table_path, primary_key)
+    logger.info("Successfully executed Delta MERGE on %s matching on %s", path_str, primary_key)
 
 
 def upsert_customers(
     spark: SparkSession,
-    silver_customers_path: Path,
+    silver_customers_path: Path | str,
     incoming_customers_df: DataFrame,
 ) -> None:
     """Idempotent MERGE for Silver Customers dimension."""
@@ -86,7 +87,7 @@ def upsert_customers(
 
 def upsert_products(
     spark: SparkSession,
-    silver_products_path: Path,
+    silver_products_path: Path | str,
     incoming_products_df: DataFrame,
 ) -> None:
     """Idempotent MERGE for Silver Products dimension."""
@@ -100,7 +101,7 @@ def upsert_products(
 
 def upsert_orders(
     spark: SparkSession,
-    silver_orders_path: Path,
+    silver_orders_path: Path | str,
     incoming_orders_df: DataFrame,
 ) -> None:
     """Idempotent MERGE for Silver Orders table."""

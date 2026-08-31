@@ -27,10 +27,10 @@ COMMENT 'Business-ready aggregated KPI Delta tables for reporting and analytics'
 -- CREATE STORAGE CREDENTIAL IF NOT EXISTS cred_adls_lakehouse
 -- WITH (
 --   AZURE_MANAGED_IDENTITY = (
---     RESOURCE_ID = '/subscriptions/<SUBSCRIPTION_ID>/resourceGroups/<RESOURCE_GROUP>/providers/Microsoft.Databricks/accessConnectors/dbx-access-connector'
+--     RESOURCE_ID = '/subscriptions/<SUBSCRIPTION_ID>/resourceGroups/<RESOURCE_GROUP>/providers/Microsoft.Databricks/accessConnectors/<ACCESS_CONNECTOR_NAME>'
 --   )
 -- );
 
 -- CREATE EXTERNAL LOCATION IF NOT EXISTS ext_loc_lakehouse
--- URL 'abfss://lakehouse@<storage_account>.dfs.core.windows.net/'
+-- URL 'abfss://<container>@<storage_account>.dfs.core.windows.net/'
 -- WITH (STORAGE CREDENTIAL cred_adls_lakehouse);

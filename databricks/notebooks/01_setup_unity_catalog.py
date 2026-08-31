@@ -19,33 +19,34 @@
 dbutils.widgets.text("catalog_name", "retail_lakehouse", "Catalog Name")
 dbutils.widgets.text("storage_account_name", "stlakehousedev", "ADLS Gen2 Storage Account")
 dbutils.widgets.text("container_name", "lakehouse", "Container Name")
-dbutils.widgets.text("access_connector_name", "dbx-access-connector", "Databricks Access Connector")
+dbutils.widgets.text("access_connector_resource_id", "/subscriptions/<SUB_ID>/resourceGroups/<RG>/providers/Microsoft.Databricks/accessConnectors/dbx-access-connector", "Access Connector Resource ID")
 
 catalog_name = dbutils.widgets.get("catalog_name")
 storage_account = dbutils.widgets.get("storage_account_name")
 container = dbutils.widgets.get("container_name")
-connector_name = dbutils.widgets.get("access_connector_name")
+connector_id = dbutils.widgets.get("access_connector_resource_id")
 
 storage_root = f"abfss://{container}@{storage_account}.dfs.core.windows.net"
 
 print(f"Catalog: {catalog_name}")
 print(f"Storage Root: {storage_root}")
+print(f"Access Connector ID: {connector_id}")
 
 # COMMAND ----------
 
-# DBTITLE 1,Create Storage Credential & External Location
+# DBTITLE 1,Create Storage Credential & External Location (Cloud Execution)
 # MAGIC %sql
 # MAGIC -- 1. Create Unity Catalog Storage Credential referencing the Databricks Access Connector Managed Identity
 # MAGIC -- CREATE STORAGE CREDENTIAL IF NOT EXISTS cred_adls_lakehouse
 # MAGIC -- WITH (
 # MAGIC --   AZURE_MANAGED_IDENTITY = (
-# MAGIC --     RESOURCE_ID = '/subscriptions/<SUBSCRIPTION_ID>/resourceGroups/<RESOURCE_GROUP>/providers/Microsoft.Databricks/accessConnectors/dbx-access-connector'
+# MAGIC --     RESOURCE_ID = '<access_connector_resource_id>'
 # MAGIC --   )
 # MAGIC -- );
 # MAGIC
 # MAGIC -- 2. Create External Location referencing ADLS Gen2 Lakehouse container
 # MAGIC -- CREATE EXTERNAL LOCATION IF NOT EXISTS ext_loc_lakehouse
-# MAGIC -- URL 'abfss://lakehouse@<storage_account>.dfs.core.windows.net/'
+# MAGIC -- URL 'abfss://<container>@<storage_account>.dfs.core.windows.net/'
 # MAGIC -- WITH (STORAGE CREDENTIAL cred_adls_lakehouse);
 
 # COMMAND ----------

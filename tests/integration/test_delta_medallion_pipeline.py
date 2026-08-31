@@ -3,18 +3,21 @@ Integration Test for End-to-End Delta Lake Medallion Pipeline (Module 3).
 
 Executes the entire Landing ➔ Bronze ➔ Silver ➔ Gold batch workflow
 with synthetic landing data, verifying data movement, Delta table persistence,
-quarantine routing, and reconciliation metrics.
+quarantine routing, reconciliation metrics, and rerun idempotency.
 """
 
 from __future__ import annotations
 
+from delta.tables import DeltaTable
+
 from src.config.settings import ScaleConfig
 from src.data_generation.generate_retail_data import generate_all_datasets
 from src.pipelines.delta_medallion_pipeline import run_delta_medallion_pipeline
+from src.utils.spark import get_spark_session
 
 
 def test_end_to_end_delta_medallion_pipeline(tmp_path):
-    """Test full execution of Delta Medallion pipeline end-to-end."""
+    """Test full execution of Delta Medallion pipeline end-to-end and rerun behavior."""
     landing_root = tmp_path / "landing"
     delta_root = tmp_path / "delta"
 
@@ -43,7 +46,7 @@ def test_end_to_end_delta_medallion_pipeline(tmp_path):
             dest.mkdir(parents=True, exist_ok=True)
             (dest / file_path.name).write_bytes(file_path.read_bytes())
 
-    # Execute pipeline
+    # 1. Initial execution of pipeline
     result = run_delta_medallion_pipeline(
         landing_root=landing_root,
         delta_root=delta_root,
@@ -56,17 +59,19 @@ def test_end_to_end_delta_medallion_pipeline(tmp_path):
     assert len(result["gold"]) == 6
     assert result["duration_seconds"] > 0
 
-    # Verify Bronze Delta tables exist on disk
+    spark = get_spark_session()
+
+    # Verify Bronze Delta tables exist via DeltaTable.isDeltaTable
     bronze_dir = delta_root / "bronze"
     for ds in ["customers", "products", "stores", "employees", "orders", "order_items", "payments", "returns"]:
-        assert (bronze_dir / ds / "_delta_log").exists()
+        assert DeltaTable.isDeltaTable(spark, str(bronze_dir / ds))
 
-    # Verify Silver Delta tables exist on disk
+    # Verify Silver Delta tables exist via DeltaTable.isDeltaTable
     silver_dir = delta_root / "silver"
     for ds in ["customers", "products", "stores", "employees", "orders", "order_items", "payments", "returns"]:
-        assert (silver_dir / ds / "_delta_log").exists()
+        assert DeltaTable.isDeltaTable(spark, str(silver_dir / ds))
 
-    # Verify Gold Delta tables exist on disk
+    # Verify Gold Delta tables exist via DeltaTable.isDeltaTable
     gold_dir = delta_root / "gold"
     for tbl in [
         "gold_daily_sales_performance",
@@ -76,4 +81,12 @@ def test_end_to_end_delta_medallion_pipeline(tmp_path):
         "gold_customer_spending_summary",
         "gold_return_refund_performance",
     ]:
-        assert (gold_dir / tbl / "_delta_log").exists()
+        assert DeltaTable.isDeltaTable(spark, str(gold_dir / tbl))
+
+    # 2. Pipeline rerun with no new files -> Bronze ingests 0 new rows (audit tracking idempotency)
+    rerun_result = run_delta_medallion_pipeline(
+        landing_root=landing_root,
+        delta_root=delta_root,
+        scale_name="small",
+    )
+    assert all(count == 0 for count in rerun_result["bronze"].values())
