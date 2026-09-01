@@ -47,16 +47,18 @@ def resolve_failed_task_from_states(
     for t_key in task_order:
         state = (task_states.get(t_key) or "").strip().lower()
         if state in FAILED_RESULT_STATES:
-            err_code = task_errors.get(t_key)
+            err_code = (task_errors.get(t_key) or "").strip()
             classification = task_values.get(t_key, "failure_classification")
             msg = task_values.get(t_key, "failure_message")
 
             if not classification:
-                if state == "timedout":
+                # Evidence-based fallback without guessing based on task name
+                if state in ("timedout", "evicted"):
                     classification = "TRANSIENT"
-                elif any(k in t_key for k in ("quality", "silver", "warehouse")):
-                    classification = "DATA_QUALITY"
-                elif "landing" in t_key:
+                elif err_code and any(
+                    kw in err_code.lower()
+                    for kw in ("unauthorized", "resourcenotfound", "invalidconfiguration", "invalidparameter")
+                ):
                     classification = "CONFIGURATION"
                 else:
                     classification = "UNKNOWN"
@@ -135,7 +137,7 @@ def execute_publish_run_summary_task(
     audit_path = f"{delta_root}/operations/job_run_audit"
     persist_job_run_audit(spark, audit, audit_path)
 
-    # 2. Register table in Unity Catalog operations schema
+    # 2. Register table in Unity Catalog operations schema (cloud verification pending)
     try:
         register_operations_tables(spark, context.catalog_name, delta_root)
     except Exception as e:

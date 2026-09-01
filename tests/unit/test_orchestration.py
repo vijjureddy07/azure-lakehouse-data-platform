@@ -339,20 +339,62 @@ def test_resolve_failed_task_from_states_and_values():
     f_task, f_class, f_msg = resolve_failed_task_from_states(task_order, states_ok, errors_none, store)
     assert f_task is None
 
-    # Scenario 2: Silver failed with published ReconciliationError
-    store.set("silver_transformation", "failure_classification", "DATA_QUALITY")
-    store.set("silver_transformation", "failure_message", "ReconciliationError: math mismatch")
-
-    states_fail = {
+    # Scenario A: silver_transformation failed, NO published classification, generic RunExecutionError
+    # Expected: failure_classification = UNKNOWN (NOT DATA_QUALITY inferred from task name)
+    store_a = TaskValueStore()
+    states_a = {
         "validate_landing_batch": "SUCCESS",
         "bronze_ingestion": "SUCCESS",
         "silver_transformation": "FAILED",
-        "dimensional_warehouse": "UPSTREAM_FAILED",  # Downstream cascade
+        "dimensional_warehouse": "UPSTREAM_FAILED",
     }
-    f_task, f_class, f_msg = resolve_failed_task_from_states(task_order, states_fail, errors_none, store)
-    assert f_task == "silver_transformation"  # Must pick root failure, NOT downstream UPSTREAM_FAILED
-    assert f_class == "DATA_QUALITY"
-    assert "ReconciliationError" in f_msg
+    errors_a = {"silver_transformation": "RunExecutionError"}
+    f_task_a, f_class_a, f_msg_a = resolve_failed_task_from_states(task_order, states_a, errors_a, store_a)
+    assert f_task_a == "silver_transformation"
+    assert f_class_a == "UNKNOWN"
+    assert "RunExecutionError" in f_msg_a
+
+    # Scenario B: dimensional_warehouse failed with published DATA_QUALITY classification
+    store_b = TaskValueStore()
+    store_b.set("dimensional_warehouse", "failure_classification", "DATA_QUALITY")
+    store_b.set("dimensional_warehouse", "failure_message", "WarehouseQualityGateError: primary key broken")
+    states_b = {
+        "validate_landing_batch": "SUCCESS",
+        "bronze_ingestion": "SUCCESS",
+        "silver_transformation": "SUCCESS",
+        "dimensional_warehouse": "FAILED",
+    }
+    f_task_b, f_class_b, f_msg_b = resolve_failed_task_from_states(task_order, states_b, errors_none, store_b)
+    assert f_task_b == "dimensional_warehouse"
+    assert f_class_b == "DATA_QUALITY"
+    assert "WarehouseQualityGateError" in f_msg_b
+
+    # Scenario C: task state = timedout with no project classification -> TRANSIENT
+    store_c = TaskValueStore()
+    states_c = {
+        "validate_landing_batch": "TIMEDOUT",
+        "bronze_ingestion": "UPSTREAM_FAILED",
+        "silver_transformation": "UPSTREAM_FAILED",
+        "dimensional_warehouse": "UPSTREAM_FAILED",
+    }
+    f_task_c, f_class_c, _ = resolve_failed_task_from_states(task_order, states_c, errors_none, store_c)
+    assert f_task_c == "validate_landing_batch"
+    assert f_class_c == "TRANSIENT"
+
+    # Scenario D: earlier actual failed task remains root failure when downstream is UPSTREAM_FAILED
+    store_d = TaskValueStore()
+    store_d.set("bronze_ingestion", "failure_classification", "TRANSIENT")
+    store_d.set("bronze_ingestion", "failure_message", "TimeoutError: Storage timeout")
+    states_d = {
+        "validate_landing_batch": "SUCCESS",
+        "bronze_ingestion": "FAILED",
+        "silver_transformation": "UPSTREAM_FAILED",
+        "dimensional_warehouse": "UPSTREAM_FAILED",
+    }
+    f_task_d, f_class_d, f_msg_d = resolve_failed_task_from_states(task_order, states_d, errors_none, store_d)
+    assert f_task_d == "bronze_ingestion"
+    assert f_class_d == "TRANSIENT"
+    assert "Storage timeout" in f_msg_d
 
 
 def test_landing_batch_validation_complete_and_incomplete(spark, tmp_path):

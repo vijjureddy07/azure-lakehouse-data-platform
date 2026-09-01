@@ -153,7 +153,8 @@ graph TD
 Under `run_if: ALL_DONE` semantics, the `publish_run_summary` task executes on both success and failure runs:
 - **Real Start Time:** Receives `job_start_time = {{job.start_time.iso_datetime}}` to measure full pipeline wall-clock duration accurately.
 - **Result States & Error Codes:** Receives upstream task result states (`{{tasks.<task>.result_state}}`) and error codes (`{{tasks.<task>.error_code}}`).
-- **Root Failure Resolution:** Inspects DAG tasks in sequence, identifies the earliest failing task, reads published `failure_classification` and `failure_message` task values, and populates RCA fields in `JobRunAudit`.
+- **Root Failure Resolution:** Inspects DAG tasks in sequence, identifies the earliest failing task, reads published `failure_classification` and `failure_message` task values, and populates RCA fields in `JobRunAudit`. If no task-published classification exists, falls back conservatively (e.g. `timedout` ➔ `TRANSIENT`, generic failure ➔ `UNKNOWN`).
+- **Operational Health Thresholds:** Job health duration threshold (`RUN_DURATION_SECONDS > 3600`) is version-controlled. Notification destinations are intentionally not embedded in executable YAML; environment-specific notifications are deferred to deployment/environment configuration in Module 6.
 
 ---
 
@@ -163,7 +164,7 @@ Under `run_if: ALL_DONE` semantics, the `publish_run_summary` task executes on b
 Module 5 completely eliminates legacy `/mnt/` DBFS mount paths. All Delta tables use governed ABFSS URIs or Unity Catalog 3-level namespace identifiers.
 
 ### Operations Unity Catalog Schema
-After `delta/operations/job_run_audit` exists on storage, it is registered under Unity Catalog:
+After the Delta audit path exists, the runtime attempts registration under `<catalog>.operations.job_run_audit`; Databricks cloud verification remains pending:
 ```sql
 CREATE CATALOG IF NOT EXISTS retail_lakehouse;
 CREATE SCHEMA IF NOT EXISTS retail_lakehouse.operations;
@@ -179,7 +180,7 @@ LOCATION 'abfss://lakehouse@stlakehousedev.dfs.core.windows.net/delta/operations
 In Databricks Lakeflow Jobs, when a pipeline fails at a downstream task (e.g. `dimensional_warehouse`), operators can trigger a **Repair Run**:
 1. Completed upstream tasks (`validate_landing_batch`, `bronze_ingestion`, `silver_transformation`) are **skipped** without re-executing.
 2. The repaired task re-runs.
-3. Due to Module 3 and Module 4 deterministic surrogate key generation and Delta MERGE idempotency, repair runs will never corrupt state or produce duplicate records.
+3. Due to Module 3 and Module 4 deterministic surrogate key generation and Delta MERGE idempotency, the idempotent Delta design is intended to make repair runs safe for unchanged inputs. Real production concurrency and cloud behavior remain subject to cloud verification.
 
 ---
 
