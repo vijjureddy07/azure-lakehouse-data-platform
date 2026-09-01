@@ -9,8 +9,9 @@ and registers it in Unity Catalog operations schema.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from src.medallion.catalog import register_operations_tables
 from src.orchestration.audit import format_run_summary, persist_job_run_audit
@@ -32,6 +33,52 @@ PRIMARY_DAG_TASK_ORDER = [
     "dimensional_warehouse",
     "final_quality_gate",
 ]
+
+TASK_VALUE_KEYS_TO_COLLECT = (
+    "terminal_state",
+    "failure_classification",
+    "failure_message",
+    "landing_ready",
+    "discovered_dataset_count",
+    "bronze_rows_ingested",
+    "silver_valid_rows",
+    "silver_quarantine_rows",
+    "quarantine_rate",
+    "quarantine_alert_triggered",
+    "gold_tables_generated",
+    "fact_sales_rows",
+    "overall_quality_status",
+)
+
+
+def collect_task_values_from_getter(
+    primary_tasks: list[str],
+    keys_to_fetch: tuple[str, ...] | list[str],
+    getter_fn: Callable[..., Any],
+    task_values: TaskValueStore,
+) -> TaskValueStore:
+    """
+    Populate a TaskValueStore by querying a getter function (such as dbutils.jobs.taskValues.get)
+    for each key independently without passing default=None and without aborting the loop on missing keys.
+
+    Args:
+        primary_tasks: List of task keys to query.
+        keys_to_fetch: Sequence of value keys to query for each task.
+        getter_fn: Callable accepting keyword arguments (taskKey=..., key=...).
+        task_values: TaskValueStore to populate.
+
+    Returns:
+        TaskValueStore: The populated task values store.
+    """
+    for t_key in primary_tasks:
+        for k in keys_to_fetch:
+            try:
+                val = getter_fn(taskKey=t_key, key=k)
+                if val is not None:
+                    task_values.set(t_key, k, val)
+            except Exception:
+                continue
+    return task_values
 
 
 def resolve_failed_task_from_task_values(

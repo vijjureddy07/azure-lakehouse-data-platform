@@ -129,7 +129,7 @@ targets:
 ### Target Isolation & Parameterization
 - **`dev` Target:** Uses `mode: development`, deploys to the developer's user workspace path, prefixes resource names, and uses development storage accounts.
 - **`prod` Target:** Uses `mode: production`, runs under a governed Service Principal identity (`run_as: { service_principal_name: "${var.deployment_sp_id}" }`), and targets production storage accounts and catalogs.
-- **Job Parameter Compatibility:** `retail_lakehouse_job.yml` defines default values referencing Bundle variables (`${var.environment}`, `${var.storage_account_name}`, `${var.catalog_name}`). Redundant task-level `base_parameters` have been eliminated to comply with Databricks Bundle validation rules, relying on native job parameter pushdown and `dbutils.jobs.taskValues` for runtime task communication.
+- **Job Parameter Compatibility:** `retail_lakehouse_job.yml` defines default values referencing Bundle variables (`${var.environment}`, `${var.storage_account_name}`, `${var.catalog_name}`) and dynamic job metadata (`{{job.id}}`, `{{job.run_id}}`, `{{job.start_time.iso_datetime}}`). Redundant task-level `base_parameters` have been eliminated to comply with Databricks Bundle validation rules, relying on native job parameter pushdown and `dbutils.jobs.taskValues` for runtime task communication.
 
 ---
 
@@ -140,7 +140,7 @@ Runs automatically on every Pull Request and push to `main`:
 1. Checks out repository.
 2. Configures Python 3.11 and Java 17 (Temurin).
 3. Executes Ruff static analysis (`ruff check .`).
-4. Executes complete Pytest suite (102 tests across Modules 1–6).
+4. Executes complete Pytest suite (107 tests across Modules 1–6).
 5. Builds the Python wheel (`python -m build --wheel`).
 6. Installs wheel in an isolated clean virtualenv and verifies smoke imports.
 7. Validates bundle configuration and serving view SQL syntax.
@@ -239,8 +239,8 @@ JOIN warehouse.dim_customer c ON s.customer_key = c.customer_key
 ## 7. Verification Status & Cloud Honesty
 
 - **Local Packaging & Build:** 🟢 `VERIFIED` (`python -m build --wheel` builds clean wheel and smoke tests pass).
-- **Static Resource Contract Tests:** 🟢 `VERIFIED` (104/104 unit & integration tests pass across Modules 1–6).
-- **GitHub Actions CI Workflow:** 🟢 `IMPLEMENTED / LOCAL TESTED` (Runs clean locally; remote CI execution pending repository push).
+- **Static Resource Contract Tests:** 🟢 `VERIFIED` (107/107 unit & integration tests pass across Modules 1–6).
+- **GitHub Actions CI Workflow:** 🟢 `VERIFIED` (Automated CI running clean on `main`).
 - **Authenticated Databricks Bundle Validation:** ⏳ `PENDING` (Requires live Databricks CLI authentication and workspace connection).
 - **Databricks Cloud Deployment:** ⏳ `PENDING`
 - **Serverless SQL Warehouse Cloud Creation:** ⏳ `PENDING`

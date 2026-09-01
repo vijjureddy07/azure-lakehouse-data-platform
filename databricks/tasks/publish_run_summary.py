@@ -74,28 +74,30 @@ task_values = TaskValueStore()
 # COMMAND ----------
 
 # Fetch task values set by upstream primary tasks in the active Lakeflow Job run
+# Note: In Databricks runtime, taskValues.get() throws on missing keys and does not allow null defaults.
+# Retrieve each key independently in its own try/except block so missing optional keys do not abort retrieval.
 for t_key in PRIMARY_DAG_TASK_ORDER:
-    try:
-        for k in (
-            "terminal_state",
-            "failure_classification",
-            "failure_message",
-            "landing_ready",
-            "discovered_dataset_count",
-            "bronze_rows_ingested",
-            "silver_valid_rows",
-            "silver_quarantine_rows",
-            "quarantine_rate",
-            "quarantine_alert_triggered",
-            "gold_tables_generated",
-            "fact_sales_rows",
-            "overall_quality_status",
-        ):
-            val = dbutils.jobs.taskValues.get(taskKey=t_key, key=k, default=None)
+    for k in (
+        "terminal_state",
+        "failure_classification",
+        "failure_message",
+        "landing_ready",
+        "discovered_dataset_count",
+        "bronze_rows_ingested",
+        "silver_valid_rows",
+        "silver_quarantine_rows",
+        "quarantine_rate",
+        "quarantine_alert_triggered",
+        "gold_tables_generated",
+        "fact_sales_rows",
+        "overall_quality_status",
+    ):
+        try:
+            val = dbutils.jobs.taskValues.get(taskKey=t_key, key=k)
             if val is not None:
                 task_values.set(t_key, k, val)
-    except Exception:
-        pass
+        except Exception:
+            continue
 
 # Determine root failed task from published task values and terminal states
 fail_task, fail_class, fail_msg = resolve_failed_task_from_task_values(

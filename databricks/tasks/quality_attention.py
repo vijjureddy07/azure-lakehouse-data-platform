@@ -21,12 +21,12 @@ env = dbutils.widgets.get("environment")
 
 # Retrieve values from upstream task values if available, otherwise fallback to widget
 try:
-    quarantine_rate = float(dbutils.jobs.taskValues.get(taskKey="silver_transformation", key="quarantine_rate", default="0.0"))
+    quarantine_rate = float(dbutils.jobs.taskValues.get(taskKey="silver_transformation", key="quarantine_rate"))
 except Exception:
     quarantine_rate = float(dbutils.widgets.get("quarantine_rate") or "0.0")
 
 try:
-    quarantine_count = int(dbutils.jobs.taskValues.get(taskKey="silver_transformation", key="silver_quarantine_rows", default="0"))
+    quarantine_count = int(dbutils.jobs.taskValues.get(taskKey="silver_transformation", key="silver_quarantine_rows"))
 except Exception:
     quarantine_count = int(dbutils.widgets.get("quarantine_count") or "0")
 

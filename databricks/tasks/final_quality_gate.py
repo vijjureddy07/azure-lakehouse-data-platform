@@ -22,17 +22,17 @@ env = dbutils.widgets.get("environment")
 
 # Retrieve values from upstream task values if available, otherwise fallback to widget
 try:
-    bronze_rows = int(dbutils.jobs.taskValues.get(taskKey="bronze_ingestion", key="bronze_rows_ingested", default=0))
+    bronze_rows = int(dbutils.jobs.taskValues.get(taskKey="bronze_ingestion", key="bronze_rows_ingested"))
 except Exception:
     bronze_rows = int(dbutils.widgets.get("bronze_rows") or "0")
 
 try:
-    silver_quarantine = int(dbutils.jobs.taskValues.get(taskKey="silver_transformation", key="silver_quarantine_rows", default=0))
+    silver_quarantine = int(dbutils.jobs.taskValues.get(taskKey="silver_transformation", key="silver_quarantine_rows"))
 except Exception:
     silver_quarantine = int(dbutils.widgets.get("silver_quarantine") or "0")
 
 try:
-    fact_sales_rows = int(dbutils.jobs.taskValues.get(taskKey="dimensional_warehouse", key="fact_sales_rows", default=0))
+    fact_sales_rows = int(dbutils.jobs.taskValues.get(taskKey="dimensional_warehouse", key="fact_sales_rows"))
 except Exception:
     fact_sales_rows = int(dbutils.widgets.get("fact_sales_rows") or "0")
 

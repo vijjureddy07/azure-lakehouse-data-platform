@@ -9,9 +9,10 @@ Validates:
 5. Fact grain preservation (sales_detail grain = 1 row per order item, zero dim_employee fanout join).
 6. Catalog parameterization via Databricks SQL named parameter syntax (USE CATALOG IDENTIFIER(:catalog_name)).
 7. Bundle dev/prod parameterization wiring in Lakeflow Jobs without deprecated/conflicting task base_parameters.
-8. GitHub Actions CI workflow (.github/workflows/ci.yml).
-9. GitHub Actions OIDC deployment workflow (.github/workflows/deploy_databricks.yml) with CLI 1.10.0 pin and SP variable wiring.
-10. Zero committed credentials, PATs, passwords, or legacy /mnt/ paths across all Module 6 artifacts.
+8. Task value retrieval runtime compatibility: zero default=None, independent per-key exception handling.
+9. GitHub Actions CI workflow (.github/workflows/ci.yml).
+10. GitHub Actions OIDC deployment workflow (.github/workflows/deploy_databricks.yml) with CLI 1.10.0 pin and SP variable wiring.
+11. Zero committed credentials, PATs, passwords, or legacy /mnt/ paths across all Module 6 artifacts.
 """
 
 from __future__ import annotations
@@ -20,6 +21,14 @@ import re
 from pathlib import Path
 
 import yaml
+
+from src.orchestration.models import TaskValueStore
+from src.orchestration.tasks.publish_run_summary import (
+    PRIMARY_DAG_TASK_ORDER,
+    TASK_VALUE_KEYS_TO_COLLECT,
+    collect_task_values_from_getter,
+    resolve_failed_task_from_task_values,
+)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 BUNDLE_ROOT = REPO_ROOT / "databricks.yml"
@@ -305,6 +314,81 @@ def test_primary_task_wrappers_publish_terminal_state():
         assert 'dbutils.jobs.taskValues.set(key="terminal_state", value="FAILED")' in code, (
             f"Wrapper {f.name} must publish terminal_state = FAILED inside exception handler"
         )
+
+
+def test_task_values_no_default_none_in_task_wrappers():
+    """Verify that task wrappers do not call dbutils.jobs.taskValues.get with default=None (unsupported in Databricks)."""
+    task_files = [
+        REPO_ROOT / "databricks" / "tasks" / "publish_run_summary.py",
+        REPO_ROOT / "databricks" / "tasks" / "final_quality_gate.py",
+        REPO_ROOT / "databricks" / "tasks" / "quality_attention.py",
+    ]
+
+    for f in task_files:
+        assert f.is_file(), f"Task file {f.name} must exist"
+        code = f.read_text(encoding="utf-8")
+        assert "default=None" not in code, f"{f.name} must NOT use default=None in taskValues.get()"
+
+
+def test_collect_task_values_independent_retrieval():
+    """Verify that missing optional keys raise exceptions without aborting retrieval of subsequent keys."""
+    # Simulate a realistic Databricks taskValues.get API that raises KeyError when a key is not set
+    # and does NOT accept default=None
+    published_state = {
+        ("validate_landing_batch", "terminal_state"): "SUCCESS",
+        ("validate_landing_batch", "landing_ready"): True,
+        ("validate_landing_batch", "discovered_dataset_count"): 8,
+        ("bronze_ingestion", "terminal_state"): "SUCCESS",
+        # Notice: bronze_ingestion has NO failure_classification or failure_message
+        ("bronze_ingestion", "bronze_rows_ingested"): 500,
+        ("silver_transformation", "terminal_state"): "SUCCESS",
+        # Notice: silver_transformation has NO failure_classification
+        ("silver_transformation", "silver_valid_rows"): 480,
+        ("silver_transformation", "silver_quarantine_rows"): 20,
+        ("silver_transformation", "quarantine_rate"): 0.04,
+    }
+
+    def mock_taskvalues_get(taskKey: str, key: str):
+        if (taskKey, key) in published_state:
+            return published_state[(taskKey, key)]
+        raise KeyError(f"Task value '{key}' not found for task '{taskKey}'")
+
+    store = TaskValueStore()
+    collect_task_values_from_getter(
+        primary_tasks=["validate_landing_batch", "bronze_ingestion", "silver_transformation"],
+        keys_to_fetch=TASK_VALUE_KEYS_TO_COLLECT,
+        getter_fn=mock_taskvalues_get,
+        task_values=store,
+    )
+
+    # Assert that missing failure_classification did NOT prevent subsequent keys from being collected
+    assert store.get("validate_landing_batch", "terminal_state") == "SUCCESS"
+    assert store.get("validate_landing_batch", "discovered_dataset_count") == 8
+    assert store.get("bronze_ingestion", "terminal_state") == "SUCCESS"
+    assert store.get("bronze_ingestion", "bronze_rows_ingested") == 500
+    assert store.get("silver_transformation", "terminal_state") == "SUCCESS"
+    assert store.get("silver_transformation", "silver_valid_rows") == 480
+    assert store.get("silver_transformation", "silver_quarantine_rows") == 20
+    assert store.get("silver_transformation", "quarantine_rate") == 0.04
+    assert store.get("bronze_ingestion", "failure_classification") is None
+
+
+def test_success_task_preserves_operational_metrics_and_resolves_success():
+    """Verify that a successful run with missing optional failure keys preserves metrics and resolves SUCCESS."""
+    store = TaskValueStore()
+    for t in PRIMARY_DAG_TASK_ORDER:
+        store.set(t, "terminal_state", "SUCCESS")
+    store.set("bronze_ingestion", "bronze_rows_ingested", 1200)
+    store.set("silver_transformation", "silver_valid_rows", 1150)
+    store.set("silver_transformation", "silver_quarantine_rows", 50)
+    store.set("silver_transformation", "quarantine_rate", 0.0416)
+    store.set("gold_analytics", "gold_tables_generated", 6)
+    store.set("dimensional_warehouse", "fact_sales_rows", 1150)
+
+    fail_task, fail_class, fail_msg = resolve_failed_task_from_task_values(PRIMARY_DAG_TASK_ORDER, store)
+    assert fail_task is None
+    assert fail_class is None
+    assert fail_msg is None
 
 
 def test_bundle_parameter_compatibility_no_notebook_base_parameters():
