@@ -1,7 +1,7 @@
 # Azure Lakehouse Data Platform
 
 > **Portfolio Project:** Enterprise Lakehouse Architecture & Production Data Engineering Platform  
-> **Target Roles:** Lead Data Engineer | Senior Azure Data Engineer | Data Platform Architect | Databricks / Lakehouse Specialist | Analytics Engineer  
+> **Target Roles:** Data Engineer | Azure Data Engineer | Databricks Data Engineer | Data Platform Engineer | Analytics Engineer  
 > **Key Technologies:** Azure Databricks, Delta Lake, Apache Spark / PySpark 3.5, Azure Data Factory (ADF), ADLS Gen2, Kimball Dimensional Modeling (SCD1 / SCD2), Lakeflow Jobs Orchestration, Declarative Automation Bundles, GitHub Actions CI/CD (OIDC), Serverless SQL Warehouse, Unity Catalog
 
 ---
@@ -15,7 +15,7 @@ This repository implements an end-to-end, enterprise-grade cloud data platform f
 3. **Module 3 (Databricks Delta Lake Medallion Architecture):** Delta transaction log ACID transactions, time travel, schema enforcement/evolution, Medallion Bronze/Silver/Gold layers, idempotent Delta MERGE, and Unity Catalog 3-level namespace.
 4. **Module 4 (Kimball Dimensional Modeling & SCD):** Enterprise star schema (`dim_customer` SCD2, `dim_product` SCD1, `dim_store`, `dim_employee`, `dim_date`, `fact_sales`, `fact_returns`), deterministic surrogate keys, point-in-time fact resolution, and enterprise data quality gates.
 5. **Module 5 (Lakeflow Jobs Orchestration & Operational Auditing):** Multi-task DAG, Task Values cross-task telemetry, condition tasks, two-tier retry taxonomy (in-process transient vs fail-fast data quality), idempotent repair runs, and durable `JobRunAudit` Delta ledger.
-6. **Module 6 (Production CI/CD, Bundles & Governed SQL Serving):** Python wheel packaging (`.whl`), Declarative Automation Bundles (IaC for `dev`/`prod`), GitHub Actions CI (Ruff, 102 Pytests, wheel smoke tests), zero-secret GitHub OIDC deployment, Serverless Databricks SQL Warehouse, and 8 governed Unity Catalog serving views.
+6. **Module 6 (Production CI/CD, Bundles & Governed SQL Serving):** Python wheel packaging (`.whl`), Declarative Automation Bundles (IaC for `dev`/`prod`), GitHub Actions CI (Ruff, 107 Pytests, wheel smoke tests), zero-secret GitHub OIDC deployment, Serverless Databricks SQL Warehouse, and 8 governed Unity Catalog serving views.
 
 ---
 
@@ -81,7 +81,7 @@ This repository implements an end-to-end, enterprise-grade cloud data platform f
   ====================================================================================================
   [ Developer PR / Push ] ──► GitHub Actions CI (.github/workflows/ci.yml)
                                  ├── 1. Ruff Static Analysis (0 errors)
-                                 ├── 2. Full Pytest Suite (102/102 tests passed)
+                                 ├── 2. Full Pytest Suite (107/107 tests passed)
                                  ├── 3. Build & Smoke Test Python Wheel (.whl)
                                  └── 4. Bundle & Serving Contract Validation
                                  
@@ -161,12 +161,12 @@ source .venv/bin/activate
 pip install -r requirements-dev.txt
 ```
 
-### 2. Run Quality Checks & Test Suite (102 Tests)
+### 2. Run Quality Checks & Test Suite (107 Tests)
 ```bash
 # Static Code Quality
 ruff check .
 
-# Automated Pytest Suite across Modules 1–6 (102 tests)
+# Automated Pytest Suite across Modules 1–6 (107 tests)
 pytest -v
 ```
 
@@ -231,8 +231,9 @@ python -m src.pipelines.dimensional_warehouse_pipeline --scale small
 
 ## 🔒 Cloud Verification & Learning Status
 
-- **Local Implementation & Automated Testing:** 🟢 **100% COMPLETE & VERIFIED** (102/102 tests passing, 0 Ruff errors)
-- **Static Resource Contract Tests:** 🟢 **VERIFIED**
+- **Local Implementation & Automated Testing:** 🟢 **100% COMPLETE & VERIFIED** (107/107 tests passing, 0 Ruff errors)
+- **Static Resource Contract Tests:** 🟢 **VERIFIED** (107/107 unit & integration tests pass across Modules 1–6)
+- **GitHub Actions CI Pipeline:** 🟢 **VERIFIED / SUCCESS** (Automated CI running clean on `main` for commit `1ffcd5a`)
 - **Authenticated Databricks Bundle Validation:** ⏳ **PENDING** (Requires live Databricks CLI authentication and workspace connection)
 - **Cloud Deployment Verification:** ⏳ **PENDING** (Live deployment requires active Azure subscription and Databricks workspace credentials)
 - **Learning Status:** ⏳ **NOT STUDIED / PENDING** (Maintained per workflow rule: `BUILD FIRST -> DOCUMENT EVERYTHING -> LEARN LATER`)
