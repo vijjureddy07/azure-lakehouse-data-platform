@@ -97,21 +97,36 @@ In the Lakehouse Dimensional Warehouse layer (`delta/warehouse/`), we transform 
 ---
 
 ### SCD TYPE 1 IMPLEMENTATION (DELTA MERGE)
-For `dim_product`, changes to `product_name`, `category`, `subcategory`, `cost_price`, `unit_price`, or `is_active` are updated in place using Delta MERGE, preserving the original deterministic `product_key`:
+### SCD TYPE 1 IMPLEMENTATION (NULL-SAFE DELTA MERGE)
+For `dim_product`, changes to `product_name`, `category`, `subcategory`, `cost_price`, `unit_price`, or `is_active` are updated in place using Delta MERGE, preserving the original deterministic `product_key`.
+
+> [!IMPORTANT]
+> **Null-Safe Comparisons in Delta MERGE:** Standard SQL inequality (`!=`) evaluates to `NULL` (falsy) if either column is `NULL`. This causes `NULL -> value` and `value -> NULL` attribute transitions to be silently skipped. We enforce Spark SQL's null-safe equality operator `<=>`:
+> `NOT (target.attribute <=> source.attribute)`
 
 ```sql
 MERGE INTO delta/warehouse/dim_product AS target
 USING incoming_products AS source
 ON target.product_id = source.product_id
-WHEN MATCHED AND (target.product_name != source.product_name OR target.unit_price != source.unit_price) THEN
+WHEN MATCHED AND (
+    NOT (target.product_name <=> source.product_name) OR
+    NOT (target.product_sku <=> source.product_sku) OR
+    NOT (target.category <=> source.category) OR
+    NOT (target.subcategory <=> source.subcategory) OR
+    NOT (target.cost_price <=> source.cost_price) OR
+    NOT (target.unit_price <=> source.unit_price) OR
+    NOT (target.is_active <=> source.is_active)
+) THEN
   UPDATE SET 
     target.product_name = source.product_name,
+    target.product_sku = source.product_sku,
     target.category = source.category,
+    target.subcategory = source.subcategory,
+    target.cost_price = source.cost_price,
     target.unit_price = source.unit_price,
     target.is_active = source.is_active
 WHEN NOT MATCHED THEN
-  INSERT (product_key, product_id, product_name, category, unit_price, is_active)
-  VALUES (source.new_product_key, source.product_id, source.product_name, source.category, source.unit_price, source.is_active);
+  INSERT *;
 ```
 
 ---
@@ -119,7 +134,12 @@ WHEN NOT MATCHED THEN
 ### SCD TYPE 2 IMPLEMENTATION (HISTORICAL VERSIONING)
 For `dim_customer`, changes to tracked attributes (`loyalty_tier`, `address`, `city`, `state`, `postal_code`) trigger historical versioning.
 
-#### 1. Deterministic SHA-256 Attribute Hashing
+#### 1. Initial Effective Date vs Business `signup_date`
+`signup_date` is a customer business attribute. It does NOT define the technical validity interval of the SCD2 dimension.
+- **Historical Warehouse Backfill Convention:** The initial customer dimension load receives `initial_effective_from = MIN(valid Silver order_timestamp)`. The first known customer snapshot is treated as valid from the warehouse reporting-history start solely to support initial historical fact backfill. Subsequent changes use actual warehouse batch/change timestamps.
+- **Business Attribute:** `signup_date` remains queryable as a normal dimensional attribute in `dim_customer`.
+
+#### 2. Deterministic SHA-256 Attribute Hashing
 To detect attribute changes instantly without wide column comparisons:
 ```python
 hash_expr = sha2(
@@ -128,7 +148,7 @@ hash_expr = sha2(
 )
 ```
 
-#### 2. Half-Open Validity Interval Semantics
+#### 3. Half-Open Validity Interval Semantics
 Every record in `dim_customer` is governed by the half-open interval `[effective_from, effective_to)`:
 - **Active Record:** `effective_to IS NULL` and `is_current = true`.
 - **Expired Record:** `effective_to = change_timestamp` and `is_current = false`.
@@ -140,7 +160,10 @@ Version 1 (GOLD):     [2026-01-01 00:00:00, 2026-06-01 12:00:00) | is_current = 
 Version 2 (PLATINUM): [2026-06-01 12:00:00, NULL)                | is_current = true  | key = 51
 ```
 
-#### 3. Deterministic Surrogate Key Allocation in Distributed Spark
+#### 4. Out-of-Order Temporal Mutation Rejection
+If an incremental update is received with `change_timestamp <= active_version.effective_from`, the pipeline raises `SCD2TemporalOrderError` **before** modifying the Delta table, preventing historical interval corruption.
+
+#### 5. Deterministic Surrogate Key Allocation in Distributed Spark
 > **CRITICAL ARCHITECTURAL RULE:** Never use `monotonically_increasing_id()` for persistent surrogate keys. It generates non-contiguous, 64-bit integers with partition-dependent gaps that change on every shuffle or repartition.
 
 Instead, allocate deterministic surrogate keys by reading the existing `max(surrogate_key)` from the target Delta table and adding `ROW_NUMBER() OVER (ORDER BY natural_key)`:
@@ -204,17 +227,19 @@ Every pipeline run must enforce automated quality gates across all six core pill
 │  1. COMPLETENESS GATES         ➔ Reject NULL surrogate keys, business keys, or critical metrics │
 │  2. UNIQUENESS GATES           ➔ Enforce 0 duplicate PKs on dimensions and 1 row/grain on facts  │
 │  3. REFERENTIAL INTEGRITY      ➔ 0 orphan foreign keys; unmapped keys must resolve to 0          │
-│  4. SCD2 TEMPORAL INVARIANTS   ➔ Exactly 1 active version per customer; no interval overlaps     │
-│  5. MEASURE VALIDITY GATES     ➔ gross >= net, quantity > 0, unit_price >= 0, profit = net-cost  │
-│  6. FINANCIAL RECONCILIATION   ➔ Fact row count == Silver items; Fact net == Silver net (0 diff) │
+│  4. UNKNOWN MEMBER USAGE       ➔ Reject key 0 (CRITICAL) in normal loads; allow in late-arriving │
+│  5. SCD2 TEMPORAL INVARIANTS   ➔ Exactly 1 active version per customer (SUM(is_current) == 1)   │
+│  6. MEASURE VALIDITY GATES     ➔ gross >= net, quantity > 0, unit_price >= 0, profit = net-cost  │
+│  7. FINANCIAL RECONCILIATION   ➔ Fact row count == Silver items; Fact net == Silver net (0 diff) │
 └──────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### AUDIT PERSISTENCE & HARD-FAIL PIPELINE SEMANTICS
 - Every quality check produces a structured `QualityCheckResult` record:
-  - `check_name`, `entity_name`, `passed`, `observed_value`, `expected_value`, `severity` (`CRITICAL` / `WARNING`), `check_timestamp`.
+  - `check_name`, `table_name`, `check_type`, `severity` (`CRITICAL` / `WARNING`), `passed`, `observed_value`, `expected_value`, `failed_row_count`, `execution_timestamp`.
 - Audit logs are appended to `delta/warehouse/quality_audit` Delta table.
 - If **ANY** check with severity `CRITICAL` fails, the pipeline raises `WarehouseQualityGateError` and immediately halts, preventing dirty data propagation.
+
 
 ---
 

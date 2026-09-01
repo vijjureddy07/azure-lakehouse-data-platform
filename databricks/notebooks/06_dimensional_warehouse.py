@@ -57,8 +57,16 @@ silver_ret = spark.read.format("delta").load(f"{silver_root}/returns")
 dim_date_df = process_dim_date(spark, f"{warehouse_root}/dim_date")
 dim_prod_df = process_dim_product_scd1(spark, silver_prod, f"{warehouse_root}/dim_product")
 dim_stor_df = process_dim_store(spark, silver_stor, f"{warehouse_root}/dim_store")
+min_order_ts = silver_ord.select(F.min("order_timestamp")).collect()[0][0]
+warehouse_history_start = min_order_ts
+
 dim_empl_df = process_dim_employee(spark, silver_empl, dim_stor_df, f"{warehouse_root}/dim_employee")
-dim_cust_df = process_dim_customer_scd2(spark, silver_cust, f"{warehouse_root}/dim_customer")
+dim_cust_df = process_dim_customer_scd2(
+    spark,
+    silver_cust,
+    f"{warehouse_root}/dim_customer",
+    initial_effective_from=warehouse_history_start,
+)
 
 # 3. Build Facts with Point-in-Time SCD2 Lookups
 fact_sales_df = process_fact_sales(

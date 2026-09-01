@@ -81,13 +81,13 @@ def process_dim_product_scd1(
             "target.product_id = source.product_id",
         ).whenMatchedUpdate(
             condition="""
-                target.product_name != source.product_name OR
-                target.product_sku != source.product_sku OR
-                target.category != source.category OR
-                target.subcategory != source.subcategory OR
-                target.cost_price != source.cost_price OR
-                target.unit_price != source.unit_price OR
-                target.is_active != source.is_active
+                NOT (target.product_name <=> source.product_name) OR
+                NOT (target.product_sku <=> source.product_sku) OR
+                NOT (target.category <=> source.category) OR
+                NOT (target.subcategory <=> source.subcategory) OR
+                NOT (target.cost_price <=> source.cost_price) OR
+                NOT (target.unit_price <=> source.unit_price) OR
+                NOT (target.is_active <=> source.is_active)
             """,
             set={
                 "product_name": "source.product_name",

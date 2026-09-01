@@ -267,5 +267,30 @@ In `reconcile_warehouse_sales()`, compute aggregates on the source (`silver_orde
 4. **Net Amount:** Confirm `SUM(silver_net) == SUM(fact_net)` (0 diff).
 If any absolute difference is greater than `0.00`, raise `ValueError` and halt the pipeline.
 
+---
+
+### Q31: How do you handle initial SCD Type 2 effective dates during historical warehouse backfills vs subsequent incremental loads?
+**Answer:**  
+1. **The Trap:** Setting `effective_from = signup_date` during initial dimension load. `signup_date` is a customer business attribute, NOT the technical validity boundary for the customer's current state. If a customer placed historical orders before their recorded `signup_date`, or if `signup_date` is in the future relative to historical orders, point-in-time joins fail and resolve to unknown surrogate key 0.
+2. **The Correct Technical Convention:** For the initial warehouse backfill, set `initial_effective_from = MIN(valid Silver order_timestamp)`. The initial customer snapshot is treated as valid from the warehouse reporting start because earlier attribute versions do not exist in the source.
+3. **Subsequent Incremental Loads:** Set `effective_from = batch_timestamp` (or source CDC timestamp).
+4. **Out-of-Order Safety:** If an incremental change is received with `change_timestamp <= active_version.effective_from`, raise `SCD2TemporalOrderError` before modifying the Delta table to prevent corrupted negative or overlapping intervals.
+
+---
+
+### Q32: Why must you use null-safe equality operators (`<=>`) when implementing SCD Type 1 Delta Lake merges?
+**Answer:**  
+In ANSI SQL and Apache Spark, comparison operators like `!=` evaluate to `NULL` (falsy) whenever either operand is `NULL`.
+- *The Failure Mode:* If a product attribute transitions from `NULL -> "Accessories"` or `"Accessories" -> NULL`, a merge update condition like `target.subcategory != source.subcategory` evaluates to `NULL` (not TRUE), causing the update to be silently skipped.
+- *The Solution:* Enforce Spark SQL's null-safe equality operator `<=>`:
+```sql
+WHEN MATCHED AND (
+    NOT (target.product_name <=> source.product_name) OR
+    NOT (target.subcategory <=> source.subcategory) OR
+    NOT (target.unit_price <=> source.unit_price)
+) THEN UPDATE SET ...
+```
+`NOT (target.col <=> source.col)` evaluates to `TRUE` if values differ OR if one is `NULL` and the other is non-`NULL`.
+
 
 

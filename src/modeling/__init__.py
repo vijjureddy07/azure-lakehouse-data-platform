@@ -20,19 +20,25 @@ from src.modeling.facts import (
 from src.modeling.quality import (
     QualityCheckResult,
     WarehouseQualityGateError,
+    check_unknown_member_usage,
     run_warehouse_quality_suite,
 )
 from src.modeling.reconciliation import reconcile_warehouse_sales
 from src.modeling.scd_type1 import process_dim_product_scd1
-from src.modeling.scd_type2 import process_dim_customer_scd2
+from src.modeling.scd_type2 import (
+    SCD2TemporalOrderError,
+    process_dim_customer_scd2,
+)
 from src.modeling.surrogate_keys import assign_surrogate_keys
 
 __all__ = [
     "QualityCheckResult",
+    "SCD2TemporalOrderError",
     "WarehouseQualityGateError",
     "assign_surrogate_keys",
     "build_dim_date",
     "build_fact_sales_dataframe",
+    "check_unknown_member_usage",
     "generate_warehouse_registration_sql",
     "process_dim_customer_scd2",
     "process_dim_date",

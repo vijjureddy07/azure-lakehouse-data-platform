@@ -11,6 +11,7 @@ Executes the Silver ➔ Warehouse batch workflow:
 from __future__ import annotations
 
 from delta.tables import DeltaTable
+from pyspark.sql.functions import col
 
 from src.config.settings import ScaleConfig
 from src.data_generation.generate_retail_data import generate_all_datasets
@@ -85,7 +86,14 @@ def test_end_to_end_dimensional_warehouse_pipeline(tmp_path):
     for fact in ["fact_sales", "fact_returns", "quality_audit"]:
         assert DeltaTable.isDeltaTable(spark, str(warehouse_root / fact))
 
-    # 5. Rerun pipeline with unchanged Silver data -> Must maintain identical row counts (idempotent MERGE)
+    # 5. Assert ZERO unexpected unknown keys (key 0) in fact_sales
+    fact_sales_df = spark.read.format("delta").load(str(warehouse_root / "fact_sales"))
+    assert fact_sales_df.filter(col("customer_key") == 0).count() == 0, "fact_sales must have 0 customer_key == 0"
+    assert fact_sales_df.filter(col("product_key") == 0).count() == 0, "fact_sales must have 0 product_key == 0"
+    assert fact_sales_df.filter(col("store_key") == 0).count() == 0, "fact_sales must have 0 store_key == 0"
+    assert fact_sales_df.filter(col("order_date_key") == 0).count() == 0, "fact_sales must have 0 order_date_key == 0"
+
+    # 6. Rerun pipeline with unchanged Silver data -> Must maintain identical row counts (idempotent MERGE)
     rerun_result = run_dimensional_warehouse_pipeline(
         silver_root=silver_root,
         warehouse_root=warehouse_root,
@@ -93,3 +101,4 @@ def test_end_to_end_dimensional_warehouse_pipeline(tmp_path):
     assert rerun_result["facts"]["fact_sales"] == wh_result["facts"]["fact_sales"]
     assert rerun_result["facts"]["fact_returns"] == wh_result["facts"]["fact_returns"]
     assert rerun_result["dimensions"]["dim_customer"] == wh_result["dimensions"]["dim_customer"]
+    assert rerun_result["reconciliation"]["passed"] is True

@@ -47,11 +47,15 @@ from src.modeling.facts import (
 )
 from src.modeling.quality import (
     WarehouseQualityGateError,
+    check_unknown_member_usage,
     run_warehouse_quality_suite,
 )
 from src.modeling.reconciliation import reconcile_warehouse_sales
 from src.modeling.scd_type1 import process_dim_product_scd1
-from src.modeling.scd_type2 import process_dim_customer_scd2
+from src.modeling.scd_type2 import (
+    SCD2TemporalOrderError,
+    process_dim_customer_scd2,
+)
 from src.modeling.surrogate_keys import assign_surrogate_keys
 
 
@@ -527,3 +531,259 @@ def test_warehouse_unity_catalog_sql_generation():
     assert "retail_lakehouse.warehouse.fact_sales" in joined
     assert "retail_lakehouse.warehouse.dim_customer" in joined
     assert "retail_lakehouse.warehouse.quality_audit" in joined
+
+
+def test_initial_scd2_effective_from_does_not_use_signup_date(spark, tmp_path):
+    """
+    Verify that initial dim_customer SCD2 creation does NOT use signup_date for effective_from,
+    but instead uses the explicit initial_effective_from (or batch_timestamp).
+    Verify that signup_date is preserved as a standard dimension attribute.
+    """
+    table_path = tmp_path / "dim_cust_initial_eff"
+    cols = ["customer_id", "first_name", "last_name", "email", "phone", "address", "city", "state", "postal_code", "country", "signup_date", "loyalty_tier"]
+
+    # Customer signed up on 2024-06-01
+    cust_data = [
+        ("C-100", "Alice", "Wonder", "alice@example.com", "555-0100", "1 Main", "City", "ST", "12345", "US", date(2024, 6, 1), "BRONZE"),
+    ]
+    df = spark.createDataFrame(cust_data, cols)
+
+    # Initial load specifies history start 2023-01-01
+    history_start = datetime(2023, 1, 1, 0, 0, 0)
+    dim_df = process_dim_customer_scd2(
+        spark=spark,
+        silver_customers_df=df,
+        dim_customer_path=table_path,
+        initial_effective_from=history_start,
+    )
+
+    row = dim_df.collect()[0]
+    # effective_from MUST be 2023-01-01 (history_start), NOT 2024-06-01 (signup_date)
+    assert row["effective_from"] == datetime(2023, 1, 1, 0, 0)
+    assert row["effective_from"] != datetime(2024, 6, 1, 0, 0)
+    # signup_date is still preserved as normal dimension attribute
+    assert row["signup_date"] == date(2024, 6, 1)
+    assert row["is_current"] is True
+
+
+def test_historical_backfill_order_before_signup_date_resolves_real_key(spark, tmp_path):
+    """
+    Test historical warehouse backfill:
+    - Customer C1 has signup_date = 2024-06-01
+    - Historical order occurred on 2023-10-01
+    - Warehouse history start = 2023-01-01 -> dim_customer.effective_from = 2023-01-01
+    - The 2023 order MUST resolve to real customer_key (e.g. 1), NOT unknown key 0.
+    """
+    table_path = tmp_path / "dim_cust_backfill"
+    cols = ["customer_id", "first_name", "last_name", "email", "phone", "address", "city", "state", "postal_code", "country", "signup_date", "loyalty_tier"]
+    cust_df = spark.createDataFrame(
+        [("C-100", "Alice", "Wonder", "a@e.com", "555", "1 Main", "C", "ST", "12345", "US", date(2024, 6, 1), "BRONZE")],
+        cols,
+    )
+    dim_cust_df = process_dim_customer_scd2(
+        spark,
+        cust_df,
+        table_path,
+        initial_effective_from=datetime(2023, 1, 1, 0, 0),
+    )
+
+    dim_prod_df = spark.createDataFrame(
+        [(10, "P-1", "SKU", "Prod", "Cat", "Sub", Decimal("10.00"), Decimal("20.00"), True)],
+        ["product_key", "product_id", "product_sku", "product_name", "category", "subcategory", "cost_price", "unit_price", "is_active"],
+    )
+    dim_store_df = spark.createDataFrame(
+        [(20, "S-1", "Store", "TYPE", "Reg", "ST", "US", date(2022, 1, 1))],
+        ["store_key", "store_id", "store_name", "store_type", "region", "state", "country", "opened_date"],
+    )
+    dim_date_df = build_dim_date(spark, "2023-01-01", "2023-12-31")
+
+    # Order in October 2023 (before signup_date in June 2024)
+    orders_df = spark.createDataFrame(
+        [("O-HIST", "C-100", "S-1", datetime(2023, 10, 1, 14, 0), date(2023, 10, 1), "STORE", "COMPLETED", Decimal("0"), Decimal("0"), Decimal("20.00"), Decimal("20.00"))],
+        ["order_id", "customer_id", "store_id", "order_timestamp", "order_date", "channel", "order_status", "shipping_cost", "tax_amount", "order_subtotal", "total_amount"],
+    )
+    items_df = spark.createDataFrame(
+        [("I-HIST", "O-HIST", "P-1", 1, Decimal("20.00"), Decimal("0"), Decimal("0"), Decimal("20.00"))],
+        ["order_item_id", "order_id", "product_id", "quantity", "unit_price", "discount_percent", "discount_amount", "net_amount"],
+    )
+
+    fact_sales = build_fact_sales_dataframe(items_df, orders_df, dim_cust_df, dim_prod_df, dim_store_df, dim_date_df)
+    row = fact_sales.collect()[0]
+    assert row["customer_key"] == 1, f"Expected real customer_key 1 during historical backfill, got {row['customer_key']}"
+    assert row["product_key"] == 10
+    assert row["store_key"] == 20
+
+
+def test_scd2_exactly_one_current_record_invariant_failure_modes(spark):
+    """
+    Test SCD2 invariant checks for:
+    - 0 current records for a customer -> FAILS quality check
+    - 2 current records for a customer -> FAILS quality check
+    """
+    # Case 1: Customer has 0 current records (both expired)
+    zero_cur_data = [
+        (1, "C-1", "A", "B", "e", "p", "a", "c", "s", "z", "US", date(2024, 1, 1), "G", "h1", datetime(2024, 1, 1), datetime(2024, 6, 1), False, 1),
+        (2, "C-1", "A", "B", "e", "p", "a", "c", "s", "z", "US", date(2024, 1, 1), "P", "h2", datetime(2024, 6, 1), datetime(2024, 12, 1), False, 2),
+    ]
+    df_zero_cur = spark.createDataFrame(zero_cur_data, schema=DIM_CUSTOMER_TEST_SCHEMA)
+
+    dim_prod = spark.createDataFrame([(10, "P-1", "SKU", "Prod", "Cat", "Sub", Decimal("10.00"), Decimal("20.00"), True)], ["product_key", "product_id", "product_sku", "product_name", "category", "subcategory", "cost_price", "unit_price", "is_active"])
+    dim_store = spark.createDataFrame([(20, "S-1", "Store", "T", "R", "S", "US", date(2025, 1, 1))], ["store_key", "store_id", "store_name", "store_type", "region", "state", "country", "opened_date"])
+    dim_date = build_dim_date(spark, "2026-01-01", "2026-01-05")
+    fact_sales = spark.createDataFrame([("I-1", "O-1", 1, 10, 20, 20260102, "C-1", "P-1", "S-1", datetime(2026, 1, 2), "COMPLETED", "ONLINE", 1, Decimal("20.00"), Decimal("20.00"), Decimal("0.00"), Decimal("20.00"), Decimal("10.00"), Decimal("10.00"))], ["order_item_id", "order_id", "customer_key", "product_key", "store_key", "order_date_key", "customer_id", "product_id", "store_id", "order_timestamp", "order_status", "channel", "quantity", "unit_price", "gross_amount", "discount_amount", "net_amount", "cost_amount", "profit_amount"])
+    fact_returns = spark.createDataFrame([("R-1", "I-1", "O-1", 1, 10, 20, 20260105, datetime(2026, 1, 5), "DEFECT", "APPROVED", Decimal("20.00"))], ["return_id", "order_item_id", "order_id", "customer_key", "product_key", "store_key", "return_date_key", "return_timestamp", "return_reason", "return_status", "refund_amount"])
+
+    with pytest.raises(WarehouseQualityGateError) as exc_zero:
+        run_warehouse_quality_suite(spark, df_zero_cur, dim_prod, dim_store, dim_date, fact_sales, fact_returns, raise_on_failure=True)
+    assert "scd2_exactly_one_current_record_per_customer" in str(exc_zero.value)
+
+    # Case 2: Customer has 2 current records
+    two_cur_data = [
+        (1, "C-1", "A", "B", "e", "p", "a", "c", "s", "z", "US", date(2024, 1, 1), "G", "h1", datetime(2024, 1, 1), None, True, 1),
+        (2, "C-1", "A", "B", "e", "p", "a", "c", "s", "z", "US", date(2024, 1, 1), "P", "h2", datetime(2024, 6, 1), None, True, 2),
+    ]
+    df_two_cur = spark.createDataFrame(two_cur_data, schema=DIM_CUSTOMER_TEST_SCHEMA)
+    with pytest.raises(WarehouseQualityGateError) as exc_two:
+        run_warehouse_quality_suite(spark, df_two_cur, dim_prod, dim_store, dim_date, fact_sales, fact_returns, raise_on_failure=True)
+    assert "scd2_exactly_one_current_record_per_customer" in str(exc_two.value)
+
+
+def test_unknown_member_quality_check_policy(spark):
+    """
+    Test check_unknown_member_usage:
+    - Normal run with key 0 present fails with CRITICAL / raises WarehouseQualityGateError.
+    - Simulated late-arriving run (allow_unknown_keys=True) passes.
+    """
+    fact_sales_with_zero = spark.createDataFrame(
+        [("I-1", "O-1", 0, 10, 20, 20260102, "C-GHOST", "P-1", "S-1", datetime(2026, 1, 2), "COMPLETED", "ONLINE", 1, Decimal("20.00"), Decimal("20.00"), Decimal("0.00"), Decimal("20.00"), Decimal("10.00"), Decimal("10.00"))],
+        ["order_item_id", "order_id", "customer_key", "product_key", "store_key", "order_date_key", "customer_id", "product_id", "store_id", "order_timestamp", "order_status", "channel", "quantity", "unit_price", "gross_amount", "discount_amount", "net_amount", "cost_amount", "profit_amount"],
+    )
+
+    # 1. Normal strict check -> Fails
+    strict_res = check_unknown_member_usage(
+        fact_sales_with_zero,
+        "fact_sales",
+        ["customer_key", "product_key", "store_key", "order_date_key"],
+        allow_unknown_keys=False,
+    )
+    cust_res = next(r for r in strict_res if r.check_name == "unknown_member_usage_fact_sales_customer_key")
+    assert cust_res.passed is False
+    assert cust_res.severity == "CRITICAL"
+
+    # 2. Permitted check for late-arriving simulation -> Passes
+    lenient_res = check_unknown_member_usage(
+        fact_sales_with_zero,
+        "fact_sales",
+        ["customer_key", "product_key", "store_key", "order_date_key"],
+        allow_unknown_keys=True,
+    )
+    cust_lenient = next(r for r in lenient_res if r.check_name == "unknown_member_usage_fact_sales_customer_key")
+    assert cust_lenient.passed is True
+    assert cust_lenient.severity == "WARNING"
+
+
+def test_scd2_half_open_interval_exact_boundary(spark):
+    """
+    Test exact boundary condition for [effective_from, effective_to):
+    - Version 1: [2026-01-01 00:00:00, 2026-06-01 00:00:00) -> customer_key = 1
+    - Version 2: [2026-06-01 00:00:00, NULL) -> customer_key = 2
+    - A transaction at EXACTLY 2026-06-01 00:00:00 MUST resolve to Version 2 (customer_key = 2).
+    """
+    dim_cust_data = [
+        (1, "C-001", "John", "Doe", "j@e.com", "555", "100 M", "Dal", "TX", "75001", "US", date(2026, 1, 1), "GOLD", "hash1", datetime(2026, 1, 1, 0, 0), datetime(2026, 6, 1, 0, 0), False, 1),
+        (2, "C-001", "John", "Doe", "j@e.com", "555", "100 M", "Dal", "TX", "75001", "US", date(2026, 1, 1), "PLATINUM", "hash2", datetime(2026, 6, 1, 0, 0), None, True, 2),
+    ]
+    dim_cust_df = spark.createDataFrame(dim_cust_data, schema=DIM_CUSTOMER_TEST_SCHEMA)
+
+    dim_prod_df = spark.createDataFrame([(10, "P-100", "SKU-1", "Laptop", "Cat", "Sub", Decimal("500"), Decimal("800"), True)], ["product_key", "product_id", "product_sku", "product_name", "category", "subcategory", "cost_price", "unit_price", "is_active"])
+    dim_store_df = spark.createDataFrame([(20, "S-200", "Store", "TYPE", "South", "TX", "US", date(2025, 1, 1))], ["store_key", "store_id", "store_name", "store_type", "region", "state", "country", "opened_date"])
+    dim_date_df = build_dim_date(spark, "2026-01-01", "2026-12-31")
+
+    # Transaction occurs at EXACT boundary timestamp: 2026-06-01 00:00:00
+    boundary_order = spark.createDataFrame(
+        [("ORD-BOUND", "C-001", "S-200", datetime(2026, 6, 1, 0, 0, 0), date(2026, 6, 1), "ONLINE", "COMPLETED", Decimal("0"), Decimal("0"), Decimal("800"), Decimal("800"))],
+        ["order_id", "customer_id", "store_id", "order_timestamp", "order_date", "channel", "order_status", "shipping_cost", "tax_amount", "order_subtotal", "total_amount"],
+    )
+    items_df = spark.createDataFrame(
+        [("ITEM-BOUND", "ORD-BOUND", "P-100", 1, Decimal("800.00"), Decimal("0"), Decimal("0"), Decimal("800.00"))],
+        ["order_item_id", "order_id", "product_id", "quantity", "unit_price", "discount_percent", "discount_amount", "net_amount"],
+    )
+
+    fact_sales = build_fact_sales_dataframe(items_df, boundary_order, dim_cust_df, dim_prod_df, dim_store_df, dim_date_df)
+    row = fact_sales.collect()[0]
+    # Because interval is [effective_from, effective_to), exact match at 2026-06-01 00:00:00 belongs to Version 2!
+    assert row["customer_key"] == 2, f"Expected customer_key 2 at boundary, got {row['customer_key']}"
+
+
+def test_scd2_out_of_order_timestamp_rejected_raises_temporal_error(spark, tmp_path):
+    """
+    Verify that attempting to apply an SCD2 change with timestamp <= current.effective_from
+    raises SCD2TemporalOrderError BEFORE modifying the Delta table.
+    """
+    table_path = tmp_path / "dim_cust_temporal_order"
+    cols = ["customer_id", "first_name", "last_name", "email", "phone", "address", "city", "state", "postal_code", "country", "signup_date", "loyalty_tier"]
+
+    # 1. Initial Load at 2026-05-01
+    t1 = datetime(2026, 5, 1, 12, 0, 0, tzinfo=timezone.utc)
+    init_data = [
+        ("C-001", "John", "Doe", "john@example.com", "555-0100", "100 Main St", "Dallas", "TX", "75001", "US", date(2026, 1, 1), "GOLD"),
+    ]
+    df1 = spark.createDataFrame(init_data, cols)
+    process_dim_customer_scd2(spark, df1, table_path, batch_timestamp=t1)
+
+    # 2. Out-of-order update at 2026-04-01 (before 2026-05-01)
+    t_bad = datetime(2026, 4, 1, 12, 0, 0, tzinfo=timezone.utc)
+    changed_data = [
+        ("C-001", "John", "Doe", "john@example.com", "555-0100", "100 Main St", "Dallas", "TX", "75001", "US", date(2026, 1, 1), "PLATINUM"),
+    ]
+    df_bad = spark.createDataFrame(changed_data, cols)
+
+    with pytest.raises(SCD2TemporalOrderError) as exc_info:
+        process_dim_customer_scd2(spark, df_bad, table_path, batch_timestamp=t_bad)
+
+    assert "Cannot apply out-of-order SCD2 change" in str(exc_info.value)
+
+    # Verify Delta table was NOT modified
+    tbl_after = spark.read.format("delta").load(str(table_path))
+    assert tbl_after.count() == 1
+    assert tbl_after.collect()[0]["loyalty_tier"] == "GOLD"
+    assert tbl_after.collect()[0]["is_current"] is True
+
+
+def test_scd_type1_null_safe_attribute_transition(spark, tmp_path):
+    """
+    Verify that SCD Type 1 correctly updates attributes when transitioning
+    from NULL to a value (or value to NULL) using null-safe comparison.
+    """
+    table_path = tmp_path / "dim_product_null_safe"
+    schema = StructType([
+        StructField("product_id", StringType(), False),
+        StructField("product_sku", StringType(), False),
+        StructField("product_name", StringType(), False),
+        StructField("category", StringType(), False),
+        StructField("subcategory", StringType(), True),
+        StructField("cost_price", DecimalType(10, 2), True),
+        StructField("unit_price", DecimalType(10, 2), True),
+        StructField("is_active", BooleanType(), False),
+    ])
+
+    # 1. Initial product with subcategory = NULL
+    init_data = [
+        ("P-NULL", "SKU-N", "Widget", "General", None, Decimal("5.00"), Decimal("10.00"), True),
+    ]
+    df1 = spark.createDataFrame(init_data, schema=schema)
+    dim_v1 = process_dim_product_scd1(spark, df1, table_path)
+    assert dim_v1.collect()[0]["subcategory"] is None
+
+    # 2. Update subcategory from NULL -> "Hardware"
+    update_data = [
+        ("P-NULL", "SKU-N", "Widget", "General", "Hardware", Decimal("5.00"), Decimal("10.00"), True),
+    ]
+    df2 = spark.createDataFrame(update_data, schema=schema)
+    dim_v2 = process_dim_product_scd1(spark, df2, table_path)
+
+    row = dim_v2.collect()[0]
+    assert row["product_key"] == 1  # Key preserved
+    assert row["subcategory"] == "Hardware"  # Updated in-place!
+
+

@@ -24,7 +24,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from pyspark.sql import Window
-from pyspark.sql.functions import col, count, lag, lit
+from pyspark.sql.functions import col, lag, lit, when
+from pyspark.sql.functions import sum as spark_sum
 from pyspark.sql.types import (
     BooleanType,
     IntegerType,
@@ -158,33 +159,77 @@ def check_referential_integrity(
     )
 
 
+def check_unknown_member_usage(
+    fact_df: DataFrame,
+    table_name: str,
+    key_cols: list[str],
+    allow_unknown_keys: bool = False,
+    severity: str = "CRITICAL",
+) -> list[QualityCheckResult]:
+    """
+    Verify whether fact records contain surrogate key 0 (Unknown Member).
+
+    In normal production runs (allow_unknown_keys=False), unexpected resolution to
+    surrogate key 0 indicates missing dimension attribution and triggers a CRITICAL gate failure.
+    For simulated late-arriving dimension workflows, allow_unknown_keys=True records a passed check
+    with severity=WARNING.
+    """
+    results: list[QualityCheckResult] = []
+    now = datetime.now(timezone.utc)
+
+    for k in key_cols:
+        unknown_count = fact_df.filter(col(k) == 0).count()
+        passed = (unknown_count == 0) or allow_unknown_keys
+        results.append(
+            QualityCheckResult(
+                check_name=f"unknown_member_usage_{table_name}_{k}",
+                table_name=table_name,
+                check_type="REFERENTIAL_INTEGRITY",
+                severity=severity if not allow_unknown_keys else "WARNING",
+                passed=passed,
+                observed_value=f"{unknown_count} rows with key 0",
+                expected_value="0 rows with key 0" if not allow_unknown_keys else "key 0 permitted for late-arriving simulation",
+                failed_row_count=unknown_count if not allow_unknown_keys else 0,
+                execution_timestamp=now,
+            )
+        )
+    return results
+
+
 def check_scd2_invariants(
     dim_customer_df: DataFrame,
     severity: str = "CRITICAL",
 ) -> list[QualityCheckResult]:
-    """Verify Kimball SCD Type 2 structural invariants."""
+    """
+    Verify Kimball SCD Type 2 structural invariants:
+    - Exactly one active (is_current = True) record per customer business key.
+    - Active records have effective_to IS NULL.
+    - Inactive records have effective_to IS NOT NULL and effective_from < effective_to.
+    - Non-overlapping validity intervals per customer.
+    """
     results: list[QualityCheckResult] = []
     now = datetime.now(timezone.utc)
 
-    # Invariant 1: At most 1 current record per customer_id
-    current_per_cust = (
+    # Invariant 1: Exactly 1 current record per customer_id (fails on 0 or >1)
+    cust_current_counts = (
         dim_customer_df
-        .filter(col("is_current") == lit(True))
         .groupBy("customer_id")
-        .agg(count("*").alias("cur_count"))
-        .filter(col("cur_count") > 1)
+        .agg(
+            spark_sum(when(col("is_current") == lit(True), 1).otherwise(0)).alias("cur_count")
+        )
     )
-    multi_cur_count = current_per_cust.count()
+    invalid_custs = cust_current_counts.filter(col("cur_count") != 1)
+    invalid_count = invalid_custs.count()
     results.append(
         QualityCheckResult(
-            check_name="scd2_single_current_record_per_customer",
+            check_name="scd2_exactly_one_current_record_per_customer",
             table_name="dim_customer",
             check_type="SCD2_INVARIANT",
             severity=severity,
-            passed=multi_cur_count == 0,
-            observed_value=f"{multi_cur_count} customers with >1 current record",
-            expected_value="0 customers with >1 current record",
-            failed_row_count=multi_cur_count,
+            passed=invalid_count == 0,
+            observed_value=f"{invalid_count} customers without exactly 1 current record",
+            expected_value="0 customers without exactly 1 current record",
+            failed_row_count=invalid_count,
             execution_timestamp=now,
         )
     )
@@ -331,10 +376,23 @@ def run_warehouse_quality_suite(
     fact_sales_df: DataFrame,
     fact_returns_df: DataFrame,
     quality_audit_path: Path | str | None = None,
+    allow_unknown_keys: bool = False,
     raise_on_failure: bool = True,
 ) -> list[QualityCheckResult]:
     """
     Execute full enterprise quality gate suite across all warehouse dimensions and facts.
+
+    Args:
+        spark: Active SparkSession.
+        dim_customer_df: Customer dimension DataFrame.
+        dim_product_df: Product dimension DataFrame.
+        dim_store_df: Store dimension DataFrame.
+        dim_date_df: Date dimension DataFrame.
+        fact_sales_df: Sales fact DataFrame.
+        fact_returns_df: Returns fact DataFrame.
+        quality_audit_path: Optional path for persisting audit results in Delta.
+        allow_unknown_keys: If True, permits surrogate key 0 in fact tables for late-arriving testing.
+        raise_on_failure: If True, raises WarehouseQualityGateError on any CRITICAL failure.
 
     Raises:
         WarehouseQualityGateError: If any CRITICAL quality gate check fails.
@@ -372,7 +430,27 @@ def run_warehouse_quality_suite(
     all_results.append(check_referential_integrity(fact_sales_df, "fact_sales", "customer_key", dim_customer_df, "customer_key"))
     all_results.append(check_referential_integrity(fact_sales_df, "fact_sales", "order_date_key", dim_date_df, "date_key"))
 
-    # 5. Measure Validity
+    # 5. Unknown Member (Key 0) Usage Policy Checks
+    all_results.extend(
+        check_unknown_member_usage(
+            fact_sales_df,
+            "fact_sales",
+            ["customer_key", "product_key", "store_key", "order_date_key"],
+            allow_unknown_keys=allow_unknown_keys,
+            severity="CRITICAL",
+        )
+    )
+    all_results.extend(
+        check_unknown_member_usage(
+            fact_returns_df,
+            "fact_returns",
+            ["customer_key", "product_key", "store_key", "return_date_key"],
+            allow_unknown_keys=allow_unknown_keys,
+            severity="CRITICAL",
+        )
+    )
+
+    # 6. Measure Validity
     all_results.extend(check_measure_validity(fact_sales_df))
 
     # Persist audit if path provided

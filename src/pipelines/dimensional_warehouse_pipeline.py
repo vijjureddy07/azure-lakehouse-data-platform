@@ -31,6 +31,9 @@ import sys
 import time
 from pathlib import Path
 
+from pyspark.sql.functions import col
+from pyspark.sql.functions import min as spark_min
+
 from src.config.settings import (
     SILVER_DIR,
     WAREHOUSE_DIR,
@@ -65,8 +68,18 @@ logger = logging.getLogger(__name__)
 def run_dimensional_warehouse_pipeline(
     silver_root: Path | str = SILVER_DIR,
     warehouse_root: Path | str = WAREHOUSE_DIR,
+    allow_unknown_keys: bool = False,
 ) -> dict:
-    """Execute the end-to-end Dimensional Warehouse pipeline."""
+    """
+    Execute the end-to-end Dimensional Warehouse pipeline.
+
+    Historical Backfill Convention:
+    The first known customer snapshot is treated as valid from the warehouse
+    reporting-history start (min valid Silver order_timestamp) solely to support
+    initial historical fact backfill. The source does not provide historical
+    customer attribute versions before the first warehouse load. Subsequent
+    changes use actual warehouse batch/change timestamps.
+    """
     start_time = time.time()
     ensure_directories()
 
@@ -99,13 +112,22 @@ def run_dimensional_warehouse_pipeline(
         print(f"  Loaded Silver Order Items: {silver_items.count():,} rows")
         print(f"  Loaded Silver Returns    : {silver_ret.count():,} rows")
 
+        # Derive initial warehouse history start timestamp from valid Silver orders
+        min_order_ts = silver_ord.select(spark_min(col("order_timestamp"))).collect()[0][0]
+        warehouse_history_start = min_order_ts
+
         # --- 2. BUILD DIMENSIONS ---
         print("\n--- STAGE 2: PROCESSING DIMENSION TABLES ---")
         dim_date_df = process_dim_date(spark, f"{wh_str}/dim_date")
         dim_prod_df = process_dim_product_scd1(spark, silver_prod, f"{wh_str}/dim_product")
         dim_stor_df = process_dim_store(spark, silver_stor, f"{wh_str}/dim_store")
         dim_empl_df = process_dim_employee(spark, silver_empl, dim_stor_df, f"{wh_str}/dim_employee")
-        dim_cust_df = process_dim_customer_scd2(spark, silver_cust, f"{wh_str}/dim_customer")
+        dim_cust_df = process_dim_customer_scd2(
+            spark,
+            silver_cust,
+            f"{wh_str}/dim_customer",
+            initial_effective_from=warehouse_history_start,
+        )
 
         print(f"  [DIM] dim_date     : {dim_date_df.count():,} rows")
         print(f"  [DIM] dim_product  : {dim_prod_df.count():,} rows (SCD Type 1)")
@@ -147,6 +169,7 @@ def run_dimensional_warehouse_pipeline(
             fact_sales_df=fact_sales_df,
             fact_returns_df=fact_returns_df,
             quality_audit_path=f"{wh_str}/quality_audit",
+            allow_unknown_keys=allow_unknown_keys,
             raise_on_failure=True,
         )
         passed_checks = sum(1 for r in quality_results if r.passed)
@@ -197,11 +220,13 @@ def main():
     parser = argparse.ArgumentParser(description="Dimensional Warehouse Pipeline CLI (Module 4)")
     parser.add_argument("--silver-dir", type=str, default=str(SILVER_DIR), help="Path to Silver Delta tables")
     parser.add_argument("--warehouse-dir", type=str, default=str(WAREHOUSE_DIR), help="Path to Warehouse Delta tables")
+    parser.add_argument("--allow-unknown-keys", action="store_true", help="Permit surrogate key 0 in quality gates for late-arriving dimension tests")
 
     args = parser.parse_args()
     run_dimensional_warehouse_pipeline(
         silver_root=args.silver_dir,
         warehouse_root=args.warehouse_dir,
+        allow_unknown_keys=args.allow_unknown_keys,
     )
 
 

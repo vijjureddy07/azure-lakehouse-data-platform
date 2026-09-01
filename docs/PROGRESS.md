@@ -12,8 +12,8 @@
 | **Module 1: Local PySpark & Quality Framework** | 🟢 **COMPLETE** | 🟢 **PASSED (15 Tests)** | ⏳ **NOT STUDIED / PENDING** |
 | **Module 2: ADF + ADLS Gen2 Cloud Ingestion** | 🟢 **COMPLETE (Deployment-Ready)**<br>*(Cloud Verification Pending)* | 🟢 **PASSED (14 Tests)** | ⏳ **NOT STUDIED / PENDING** |
 | **Module 3: Databricks + Delta Lake + Medallion** | 🟢 **COMPLETE (Local-Verified)**<br>*(Databricks Cloud Pending)* | 🟢 **PASSED (18 Tests)** | ⏳ **NOT STUDIED / PENDING** |
-| **Module 4: Advanced PySpark + Dimensional Modeling + SCD** | 🟢 **COMPLETE (Local-Verified)**<br>*(Databricks Cloud Pending)* | 🟢 **PASSED (12 Tests)** | ⏳ **NOT STUDIED / PENDING** |
-| **Total Test Suite Pass** | 🟢 **ALL MODULES PASSING** | 🟢 **59 / 59 TESTS PASSED** | ⏳ **NOT STUDIED / PENDING** |
+| **Module 4: Advanced PySpark + Dimensional Modeling + SCD** | 🟢 **COMPLETE (Local-Verified & Hardened)**<br>*(Databricks Cloud Pending)* | 🟢 **PASSED (19 Tests)** | ⏳ **NOT STUDIED / PENDING** |
+| **Total Test Suite Pass** | 🟢 **ALL MODULES PASSING** | 🟢 **66 / 66 TESTS PASSED** | ⏳ **NOT STUDIED / PENDING** |
 | **Module 5: Orchestration + Databricks Jobs + Alerts** | ⏹️ NOT STARTED | ⏹️ NOT STARTED | ⏳ **NOT STUDIED / PENDING** |
 | **Module 6: CI/CD + Serving Architecture** | ⏹️ NOT STARTED | ⏹️ NOT STARTED | ⏳ **NOT STUDIED / PENDING** |
 
@@ -24,17 +24,17 @@
 - [x] **Star Schema Architecture:** Designed and implemented Kimball dimensional model with 5 dimension tables (`dim_customer`, `dim_product`, `dim_store`, `dim_employee`, `dim_date`) and 2 fact tables (`fact_sales`, `fact_returns`) in `delta/warehouse/`.
 - [x] **Deterministic Surrogate Keys:** Implemented deterministic surrogate-key allocation (`assign_surrogate_keys`) using `max_existing_key + ROW_NUMBER() OVER (ORDER BY natural_key)` in `src/modeling/surrogate_keys.py` (avoiding non-deterministic `monotonically_increasing_id`).
 - [x] **Deterministic Calendar Dimension (`dim_date`):** Generated 2020-2030 date sequence with rich calendar attributes (`day_name`, `month_name`, `quarter_name`, `is_weekend`, `is_month_end`) and unknown member (key 0).
-- [x] **SCD Type 1 Dimension (`dim_product`):** In-place attribute updates via Delta MERGE preserving stable surrogate `product_key`.
+- [x] **SCD Type 1 Dimension (`dim_product`):** In-place attribute updates via Delta MERGE with NULL-safe `<=>` comparison condition preserving stable surrogate `product_key`.
 - [x] **SCD Type 2 Dimension (`dim_customer`):** Full historical versioning with SHA-256 attribute hash (`attribute_hash`), half-open validity intervals `[effective_from, effective_to)`, `is_current`, `version_number`, and strict column ordering (`DIM_CUSTOMER_COLS`).
+- [x] **SCD2 Temporal Integrity & Historical Backfill:** Separated business `signup_date` from technical validity start `initial_effective_from = MIN(valid Silver order_timestamp)`. Pre-mutation validation raising `SCD2TemporalOrderError` on out-of-order timestamps.
 - [x] **Point-in-Time Fact Resolution:** Temporal surrogate key resolution joining orders to historical dimension versions valid at `order_timestamp >= effective_from AND (order_timestamp < effective_to OR effective_to IS NULL)`.
 - [x] **Exact Financial Measures & Grain:** Fact tables at 1 row/order item and 1 row/return grain with exact `Decimal(10, 2)` calculations (`gross_amount`, `discount_amount`, `net_amount`, `cost_amount`, `profit_amount`).
-- [x] **Late-Arriving Dimensions & Unknown Members:** Missing or unmapped foreign keys resolve to surrogate key `0`.
-- [x] **Enterprise Data Quality Gates:** Automated quality gate suite covering Completeness, Uniqueness, Referential Integrity, SCD2 Temporal Invariants, and Measure Validity with audit logging in `delta/warehouse/quality_audit` and `WarehouseQualityGateError` pipeline abort.
+- [x] **Strict Quality Gates & Unknown Key Policy:** Automated quality gate suite covering Completeness, Uniqueness, Referential Integrity, Unknown Member Usage (`check_unknown_member_usage` failing CRITICAL on key 0 in normal loads), SCD2 Temporal Invariants (`SUM(is_current) == 1`), and Measure Validity with audit logging in `delta/warehouse/quality_audit` and `WarehouseQualityGateError` pipeline abort.
 - [x] **Warehouse Sales Reconciliation:** Mathematical and financial validation verifying 100% row-count and Decimal currency match between Silver order items and `fact_sales`.
 - [x] **Unity Catalog Warehouse Schema Registration:** Modular DDL generation for `retail_lakehouse.warehouse.*` schema and external tables.
 - [x] **Dimensional Warehouse CLI Pipeline:** Production-ready CLI runner `src/pipelines/dimensional_warehouse_pipeline.py`.
 - [x] **Interactive Databricks Notebook & SQL Queries:** `databricks/notebooks/06_dimensional_warehouse.py` and `databricks/sql/03_warehouse_star_schema.sql`.
-- [x] **Automated Test Suite & Linting:** 12 passing tests in Module 4 (11 unit + 1 integration), 59 tests passing repository-wide, and verified 0 errors with Ruff linter.
+- [x] **Automated Test Suite & Linting:** 19 passing tests in Module 4 (18 unit + 1 integration), 66 tests passing repository-wide, and verified 0 errors with Ruff linter.
 - [x] **Module 4 Study Guide & Documentation:** Authored `docs/07_DIMENSIONAL_MODELING_SCD.md` and updated `README.md`, `00_LEARNING_INDEX.md`, `IMPLEMENTATION_MAP.md`, and `INTERVIEW_QA.md`.
 
 ---

@@ -29,7 +29,6 @@ from pyspark.sql.functions import (
     lit,
     row_number,
     sha2,
-    to_timestamp,
 )
 from pyspark.sql.functions import (
     max as spark_max,
@@ -47,6 +46,11 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 TRACKED_SCD2_COLS = ["loyalty_tier", "address", "city", "state", "postal_code"]
+
+
+class SCD2TemporalOrderError(ValueError):
+    """Raised when an SCD2 update is attempted with a timestamp on or before the active version's effective_from."""
+    pass
 
 
 def compute_customer_attribute_hash(df: DataFrame) -> DataFrame:
@@ -88,6 +92,7 @@ def process_dim_customer_scd2(
     silver_customers_df: DataFrame,
     dim_customer_path: Path | str,
     batch_timestamp: datetime | None = None,
+    initial_effective_from: datetime | None = None,
 ) -> DataFrame:
     """
     Process Silver customers into SCD Type 2 dim_customer Delta table.
@@ -96,7 +101,9 @@ def process_dim_customer_scd2(
         spark: Active SparkSession.
         silver_customers_df: Conformed Silver customers DataFrame.
         dim_customer_path: Path or ABFSS URI to dim_customer Delta table.
-        batch_timestamp: Optional effective timestamp for changes (defaults to UTC now).
+        batch_timestamp: Effective timestamp for changes (defaults to UTC now).
+        initial_effective_from: Explicit history start timestamp for initial warehouse load.
+                                If omitted on initial load, falls back to batch_timestamp.
 
     Returns:
         DataFrame: Complete current state of dim_customer.
@@ -127,13 +134,15 @@ def process_dim_customer_scd2(
 
     # --- CASE 1: INITIAL DIMENSION LOAD ---
     if not DeltaTable.isDeltaTable(spark, path_str):
+        # Initial load effective_from: initial_effective_from or batch_timestamp (never signup_date)
+        eff_from_ts = initial_effective_from if initial_effective_from is not None else now_ts
         win = Window.orderBy("customer_id")
         initial_dim = (
             incoming_hashed
             .withColumn("customer_key", row_number().over(win).cast(IntegerType()))
             .withColumn(
                 "effective_from",
-                coalesce(to_timestamp(col("signup_date")), lit(now_ts)).cast(TimestampType()),
+                lit(eff_from_ts).cast(TimestampType()),
             )
             .withColumn("effective_to", lit(None).cast(TimestampType()))
             .withColumn("is_current", lit(True).cast(BooleanType()))
@@ -142,7 +151,12 @@ def process_dim_customer_scd2(
         )
 
         initial_dim.write.format("delta").mode("overwrite").save(path_str)
-        logger.info("Initialized dim_customer SCD2 table at %s with %d rows", path_str, initial_dim.count())
+        logger.info(
+            "Initialized dim_customer SCD2 table at %s with %d rows (effective_from=%s)",
+            path_str,
+            initial_dim.count(),
+            eff_from_ts,
+        )
         return spark.read.format("delta").load(path_str)
 
     # --- CASE 2: INCREMENTAL / SCD2 MERGE PROCESSING ---
@@ -154,6 +168,7 @@ def process_dim_customer_scd2(
         col("customer_id").alias("cur_customer_id"),
         col("attribute_hash").alias("cur_attribute_hash"),
         col("version_number").alias("prev_version"),
+        col("effective_from").alias("cur_effective_from"),
     )
 
     # Join incoming with current active dimension records
@@ -167,7 +182,7 @@ def process_dim_customer_scd2(
     new_customers_df = (
         joined
         .filter(col("cur_customer_id").isNull())
-        .drop("cur_customer_id", "cur_attribute_hash", "prev_version")
+        .drop("cur_customer_id", "cur_attribute_hash", "prev_version", "cur_effective_from")
     )
 
     # 2. Changed customers (active record exists but tracked attribute_hash differs)
@@ -187,6 +202,22 @@ def process_dim_customer_scd2(
         logger.info("dim_customer SCD2: No new or changed records detected. Table is up to date.")
         return spark.read.format("delta").load(path_str)
 
+    # Validation: Prevent out-of-order SCD2 mutations BEFORE modifying Delta table
+    if changed_count > 0:
+        invalid_orders = changed_customers_df.filter(
+            col("cur_effective_from") >= lit(now_ts).cast(TimestampType())
+        ).collect()
+        if invalid_orders:
+            bad_cid = invalid_orders[0]["customer_id"]
+            bad_eff = invalid_orders[0]["cur_effective_from"]
+            raise SCD2TemporalOrderError(
+                f"Cannot apply out-of-order SCD2 change for customer '{bad_cid}': "
+                f"change timestamp ({now_ts}) must be strictly later than active version "
+                f"effective_from ({bad_eff})."
+            )
+
+    logger.info("dim_customer SCD2: Processing %d new customers and %d changed customers", new_count, changed_count)
+
     # Step A: Prepare and materialize new version rows BEFORE modifying the Delta table
     new_rows_list = []
     if new_count > 0:
@@ -196,7 +227,7 @@ def process_dim_customer_scd2(
             .withColumn("customer_key", (row_number().over(new_cust_win) + lit(max_existing_key)).cast(IntegerType()))
             .withColumn(
                 "effective_from",
-                coalesce(to_timestamp(col("signup_date")), lit(now_ts)).cast(TimestampType()),
+                lit(now_ts).cast(TimestampType()),
             )
             .withColumn("effective_to", lit(None).cast(TimestampType()))
             .withColumn("is_current", lit(True).cast(BooleanType()))
