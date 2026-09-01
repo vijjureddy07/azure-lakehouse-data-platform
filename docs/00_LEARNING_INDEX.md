@@ -13,8 +13,8 @@
 | **Module 2** | **Cloud Ingestion: ADF & ADLS Gen2**<br>*(Azure Data Factory Pipelines, Linked Services, Datasets, ADLS Gen2 Hierarchical Namespace, RBAC, Managed Identity)* | **COMPLETE (Deployment-Ready)**<br>*(Cloud Verification Pending)* | ⏳ **NOT STUDIED / PENDING** |
 | **Module 3** | **Azure Databricks, Delta Lake & Medallion Architecture**<br>*(Unity Catalog 3-Level Namespace, Delta ACID Transactions, Time Travel, Schema Enforcement/Evolution, Bronze / Silver / Gold Medallion Lakehouse, Delta MERGE, Databricks Access Connector)* | **COMPLETE (Local-Verified)**<br>*(Databricks Cloud Pending)* | ⏳ **NOT STUDIED / PENDING** |
 | **Module 4** | **Advanced PySpark, Dimensional Modeling & Enterprise Data Quality**<br>*(Star Schema, Facts & Dimensions, SCD Type 1 & 2, Point-in-Time Fact Resolution, Enterprise Data Quality Gates, Financial Reconciliation)* | **COMPLETE (Local-Verified)**<br>*(Databricks Cloud Pending)* | ⏳ **NOT STUDIED / PENDING** |
-| **Module 5** | **Orchestration, Databricks Workflows & Platform Monitoring**<br>*(Databricks Asset Bundles / Workflows, Azure Monitor, Log Analytics, Pipeline Alerts)* | ⏹️ NOT STARTED | ⏳ **NOT STUDIED / PENDING** |
-| **Module 6** | **End-to-End Testing, CI/CD & Final Serving Architecture**<br>*(GitHub Actions CI/CD, Unit/Integration Test Suites, Synapse Serverless / Power BI DirectLake)* | ⏹️ NOT STARTED | ⏳ **NOT STUDIED / PENDING** |
+| **Module 5** | **Lakeflow Jobs Orchestration + Reliability + Operational Monitoring**<br>*(Lakeflow Jobs Multi-Task DAG, Task Values Communication, Transient vs Deterministic Failure Classification, Idempotent Repair Runs, Operational Run Auditing)* | **COMPLETE (Local-Verified)**<br>*(Databricks Cloud Pending)* | ⏳ **NOT STUDIED / PENDING** |
+| **Module 6** | **Declarative Automation Bundles, CI/CD & Final Serving Architecture**<br>*(GitHub Actions CI/CD, Packaging, Synapse Serverless / Power BI DirectLake)* | ⏹️ NOT STARTED | ⏳ **NOT STUDIED / PENDING** |
 
 ---
 
@@ -27,6 +27,7 @@
 - [05_ADF_ADLS_CLOUD_INGESTION.md](05_ADF_ADLS_CLOUD_INGESTION.md): Azure Data Factory, ADLS Gen2 with Hierarchical Namespace, Managed Identity, Azure RBAC, and parameterized master-child orchestration.
 - [06_DATABRICKS_DELTA_MEDALLION.md](06_DATABRICKS_DELTA_MEDALLION.md): Azure Databricks architecture, Unity Catalog 3-level namespace, Delta Lake transaction log internals, ACID guarantees, Medallion Bronze/Silver/Gold layers, Delta MERGE, Time Travel, and Schema Enforcement/Evolution.
 - [07_DIMENSIONAL_MODELING_SCD.md](07_DIMENSIONAL_MODELING_SCD.md): Enterprise star schema dimensional modeling, SCD Type 1 & Type 2 with deterministic surrogate keys, Point-in-Time fact resolution, and enterprise data quality gate enforcement.
+- [08_LAKEFLOW_JOBS_ORCHESTRATION.md](08_LAKEFLOW_JOBS_ORCHESTRATION.md): Lakeflow Jobs multi-task DAG, cross-task communication via Task Values, failure taxonomy & retry policies, idempotent repair runs, and durable Delta operational run auditing.
 - [IMPLEMENTATION_MAP.md](IMPLEMENTATION_MAP.md): Skill-to-code mapping tracing requirements from domain to implementation functions and Parquet/Delta outputs.
-- [INTERVIEW_QA.md](INTERVIEW_QA.md): Comprehensive interview questions and expected technical answers covering Modules 1, 2, 3, and 4.
+- [INTERVIEW_QA.md](INTERVIEW_QA.md): Comprehensive interview questions and expected technical answers covering Modules 1–5.
 - [PROGRESS.md](PROGRESS.md): Detailed tracking table for build, test, and study milestones.

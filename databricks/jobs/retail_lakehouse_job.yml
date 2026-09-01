@@ -1,0 +1,167 @@
+# ==============================================================================
+# Lakeflow Jobs Orchestration Specification (Module 5)
+# Product: Azure Databricks Lakeflow Jobs (formerly Databricks Workflows / Jobs)
+# Workload: Omnichannel Retail Medallion Lakehouse & Kimball Dimensional Warehouse
+# ==============================================================================
+
+resources:
+  jobs:
+    retail_lakehouse_batch_pipeline:
+      name: "Retail Lakehouse Batch Pipeline"
+      description: "End-to-end Lakeflow Job orchestrating ADF Landing Validation, Bronze Ingestion, Silver Conformance, Gold Analytics, Dimensional Warehouse, Enterprise Quality Gates, and Operational Run Auditing."
+      
+      # ------------------------------------------------------------------------
+      # Job-Level Parameters (Dynamic & Environment Overrides)
+      # ------------------------------------------------------------------------
+      parameters:
+        - name: environment
+          default: "dev"
+        - name: ingestion_date
+          default: "{{job.start_time.iso_date}}"
+        - name: adf_run_id
+          default: "manual_orchestration_run"
+        - name: storage_account_name
+          default: "stlakehousedev"
+        - name: container_name
+          default: "lakehouse"
+        - name: catalog_name
+          default: "retail_lakehouse"
+        - name: quarantine_threshold_rate
+          default: "0.20"
+
+      # ------------------------------------------------------------------------
+      # Operational Notifications & Health Thresholds
+      # ------------------------------------------------------------------------
+      email_notifications:
+        on_failure:
+          - "<operations-email>"
+        on_duration_warning_threshold_exceeded:
+          - "<operations-email>"
+        no_alert_for_skipped_runs: true
+
+      health:
+        rules:
+          - metric: RUN_DURATION_SECONDS
+            op: GREATER_THAN
+            value: 3600
+
+      # ------------------------------------------------------------------------
+      # Task Dependency Graph (DAG)
+      # ------------------------------------------------------------------------
+      tasks:
+        # Task 1: Validate ADF Landing Batch Availability
+        - task_key: validate_landing_batch
+          description: "Prerequisite check verifying that the ADF landing batch exists and contains all required datasets."
+          python_wheel_task:
+            package_name: "azure_lakehouse_data_platform"
+            entry_point: "validate_landing"
+            named_parameters:
+              ingestion_date: "{{job.parameters.ingestion_date}}"
+              adf_run_id: "{{job.parameters.adf_run_id}}"
+              storage_account_name: "{{job.parameters.storage_account_name}}"
+              container_name: "{{job.parameters.container_name}}"
+          timeout_seconds: 600
+          max_retries: 2
+          min_retry_interval_millis: 10000
+          retry_on_timeout: false
+
+        # Task 2: Bronze Layer Raw Delta Ingestion
+        - task_key: bronze_ingestion
+          description: "Ingests raw immutable landing files into Bronze Delta tables with metadata tracking."
+          depends_on:
+            - task_key: validate_landing_batch
+          python_wheel_task:
+            package_name: "azure_lakehouse_data_platform"
+            entry_point: "run_bronze"
+            named_parameters:
+              landing_batch_path: "{{tasks.validate_landing_batch.values.batch_path}}"
+              catalog_name: "{{job.parameters.catalog_name}}"
+          timeout_seconds: 1200
+          max_retries: 1
+          min_retry_interval_millis: 15000
+
+        # Task 3: Silver Conformance, Deduplication & Quality Quarantine
+        - task_key: silver_transformation
+          description: "Conforms Bronze into clean Silver Delta tables, routes defect records to quarantine, and verifies mathematical reconciliation."
+          depends_on:
+            - task_key: bronze_ingestion
+          python_wheel_task:
+            package_name: "azure_lakehouse_data_platform"
+            entry_point: "run_silver"
+            named_parameters:
+              catalog_name: "{{job.parameters.catalog_name}}"
+              quarantine_threshold: "{{job.parameters.quarantine_threshold_rate}}"
+          timeout_seconds: 1800
+          max_retries: 1
+          min_retry_interval_millis: 15000
+
+        # Task 4A: Gold Analytical KPIs (Parallel branch with Warehouse)
+        - task_key: gold_analytics
+          description: "Computes business analytical KPIs and aggregates for reporting dashboards."
+          depends_on:
+            - task_key: silver_transformation
+          python_wheel_task:
+            package_name: "azure_lakehouse_data_platform"
+            entry_point: "run_gold"
+            named_parameters:
+              catalog_name: "{{job.parameters.catalog_name}}"
+          timeout_seconds: 1200
+          max_retries: 1
+          min_retry_interval_millis: 15000
+
+        # Task 4B: Kimball Dimensional Warehouse (Parallel branch with Gold)
+        - task_key: dimensional_warehouse
+          description: "Executes Kimball star schema modeling (dim_customer SCD2, dim_product SCD1, PIT fact_sales) and enterprise quality gates."
+          depends_on:
+            - task_key: silver_transformation
+          python_wheel_task:
+            package_name: "azure_lakehouse_data_platform"
+            entry_point: "run_warehouse"
+            named_parameters:
+              catalog_name: "{{job.parameters.catalog_name}}"
+              quarantine_count: "{{tasks.silver_transformation.values.silver_quarantine_rows}}"
+          timeout_seconds: 2400
+          max_retries: 1
+          min_retry_interval_millis: 15000
+
+        # Task 5: Final Operational Quality Gate
+        - task_key: final_quality_gate
+          description: "Verifies high-level operational quality criteria and reconciliation results across all upstream layers."
+          depends_on:
+            - task_key: gold_analytics
+            - task_key: dimensional_warehouse
+          python_wheel_task:
+            package_name: "azure_lakehouse_data_platform"
+            entry_point: "final_quality_gate"
+            named_parameters:
+              bronze_rows: "{{tasks.bronze_ingestion.values.bronze_rows_ingested}}"
+              silver_quarantine: "{{tasks.silver_transformation.values.silver_quarantine_rows}}"
+              fact_sales_rows: "{{tasks.dimensional_warehouse.values.fact_sales_rows}}"
+          timeout_seconds: 600
+          max_retries: 0
+
+        # Task 6: Publish Operational Run Summary (Runs on SUCCESS or FAILURE)
+        - task_key: publish_run_summary
+          description: "Compiles operational metrics and persists an audit row to delta/operations/job_run_audit under all conditions."
+          depends_on:
+            - task_key: final_quality_gate
+          run_if: ALL_DONE
+          python_wheel_task:
+            package_name: "azure_lakehouse_data_platform"
+            entry_point: "publish_run_summary"
+            named_parameters:
+              job_id: "{{job.id}}"
+              job_run_id: "{{job.run_id}}"
+              environment: "{{job.parameters.environment}}"
+              ingestion_date: "{{job.parameters.ingestion_date}}"
+              adf_run_id: "{{job.parameters.adf_run_id}}"
+          timeout_seconds: 300
+          max_retries: 1
+
+      # ------------------------------------------------------------------------
+      # Schedule Configuration (Deployment-Ready, Paused by Default)
+      # ------------------------------------------------------------------------
+      schedule:
+        quartz_cron_expression: "0 0 4 * * ?"  # 04:00 UTC Daily
+        timezone_id: "UTC"
+        pause_status: "PAUSED"

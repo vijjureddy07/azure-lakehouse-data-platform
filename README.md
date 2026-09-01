@@ -14,6 +14,7 @@ The project is structured into progressive modules:
 - **Module 2 (Complete & Deployment-Ready | Cloud Verification Pending):** Azure Cloud Ingestion Platform — Parameterized Azure Data Factory (ADF) master-child orchestration, Azure Data Lake Storage Gen2 (ADLS Gen2) with Hierarchical Namespace (HNS), Microsoft Entra System-Assigned Managed Identity, Azure RBAC, and dynamic landing path formatting.
 - **Module 3 (Complete & Local-Verified | Databricks Cloud Pending):** Azure Databricks, Delta Lake ACID Transactions, and Medallion Architecture (Landing ➔ Bronze ➔ Silver ➔ Gold), Delta MERGE, Time Travel, Schema Enforcement/Evolution, and Unity Catalog 3-Level Namespace.
 - **Module 4 (Complete & Local-Verified | Databricks Cloud Pending):** Advanced PySpark, Kimball Star Schema Dimensional Modeling (`dim_customer`, `dim_product`, `dim_store`, `dim_employee`, `dim_date`, `fact_sales`, `fact_returns`), SCD Type 1 & 2 processing with deterministic surrogate keys, Point-in-Time fact resolution, and enterprise data quality gate enforcement.
+- **Module 5 (Complete & Local-Verified | Databricks Cloud Pending):** Lakeflow Jobs Orchestration, Multi-Task DAG, Cross-Task Communication via Task Values, Failure Taxonomy, Intelligent Retries, Idempotent Repair Runs, and Delta Operational Run Auditing (`delta/operations/job_run_audit`).
 
 ---
 
@@ -112,6 +113,21 @@ The project is structured into progressive modules:
 |             ├── Audit Table   : delta/warehouse/quality_audit (Structured check results)           |
 |             └── Reconciliation: 100% row-count & Decimal financial parity (Silver vs Warehouse)   |
 +----------------------------------------------------------------------------------------------------+
+|                             MODULE 5: LAKEFLOW JOBS ORCHESTRATION & RELIABILITY                    |
+|                                                                                                    |
+|  [ Lakeflow Jobs Multi-Task DAG ] (databricks/jobs/retail_lakehouse_job.yml)                       |
+|             │                                                                                      |
+|             ├── 1. validate_landing_batch  : Checks ADF raw landing readiness (retries: 2)         |
+|             ├── 2. bronze_ingestion        : Appends raw files with lineage audit (retries: 1)     |
+|             ├── 3. silver_transformation   : Conforms & quarantines, verifies math reconciliation  |
+|             ├── 4A. gold_analytics         : Derives KPI aggregations (parallel branch)            |
+|             ├── 4B. dimensional_warehouse  : Builds Kimball Star Schema & EDQ (parallel branch)    |
+|             ├── 5. final_quality_gate      : Validates cross-stage operational health              |
+|             └── 6. publish_run_summary     : Persists JobRunAudit record (run_if: ALL_DONE)        |
+|             │                                                                                      |
+|             ▼ (Operational Ledger Sink)                                                            |
+|  [ Operational Audit: delta/operations/job_run_audit ] (Grain = 1 row / Lakeflow Job execution)   |
++----------------------------------------------------------------------------------------------------+
 ```
 
 ### 🗺️ Cloud Roadmap
@@ -119,8 +135,8 @@ The project is structured into progressive modules:
 - **Module 2:** Azure Cloud Ingestion Platform (ADF + ADLS Gen2) — **BUILD COMPLETE (Deployment-Ready)**
 - **Module 3:** Azure Databricks, Delta Lake ACID Transactions, and Medallion Architecture (Bronze -> Silver -> Gold) — **COMPLETE (Local-Verified)**
 - **Module 4:** Advanced PySpark, Dimensional Modeling (Star Schema / Kimball), and Slowly Changing Dimensions (SCD Type 1 & 2) — **COMPLETE (Local-Verified)**
-- **Module 5:** Pipeline Orchestration with Databricks Workflows, Azure Monitor, and Logging — **NOT STARTED**
-- **Module 6:** CI/CD Automation with GitHub Actions, Automated PySpark Testing, and Serving Layers — **NOT STARTED**
+- **Module 5:** Lakeflow Jobs Orchestration, Task Values, Intelligent Retries, and Operational Run Auditing — **COMPLETE (Local-Verified)**
+- **Module 6:** Declarative Automation Bundles, CI/CD with GitHub Actions, and Serving Architecture — **NOT STARTED**
 
 ---
 

@@ -292,5 +292,56 @@ WHEN MATCHED AND (
 ```
 `NOT (target.col <=> source.col)` evaluates to `TRUE` if values differ OR if one is `NULL` and the other is non-`NULL`.
 
+---
+
+## Module 5: Lakeflow Jobs Orchestration, Reliability & Operational Monitoring
+
+### Q33: How do you orchestrate your Omnichannel Retail Lakehouse in Azure Databricks, and what is Lakeflow Jobs?
+**Answer:**  
+In modern Databricks architecture, **Lakeflow Jobs** (formerly known as Databricks Workflows) is the unified orchestration engine. The workload is structured as a multi-task DAG:
+1. `validate_landing_batch`: Prerequisite verification of ADF raw landing files.
+2. `bronze_ingestion`: Ingests raw files with audit metadata into Bronze Delta.
+3. `silver_transformation`: Conforms Bronze into clean Silver, isolates defects to quarantine, and verifies mathematical reconciliation.
+4. Parallel branches:
+   - `gold_analytics`: Derives high-level KPI aggregate Delta tables.
+   - `dimensional_warehouse`: Executes Kimball star schema (SCD1, SCD2, PIT fact loading) and enterprise quality gates.
+5. `final_quality_gate`: Verifies cross-stage operational metrics.
+6. `publish_run_summary`: Compiles and persists an operational record to `delta/operations/job_run_audit` under `run_if: ALL_DONE` semantics.
+
+---
+
+### Q34: What is the difference between transient infrastructure retries and deterministic data quality failure handling in a Lakeflow Job?
+**Answer:**  
+- **Transient Failures (Retryable):** Temporary network timeouts, storage throttling, or concurrency locks. The task is configured with `max_retries: 1-2` and exponential backoff, allowing automatic self-healing.
+- **Deterministic Data Quality Failures (Non-Retryable):** If Silver mathematical reconciliation fails (`bronze != valid + quarantine`) or fact tables violate warehouse quality gates, **retrying with identical source data will produce the exact same failure**. Retrying wastes cloud compute and delays alerts. The pipeline immediately aborts retries, marks the run `FAILED`, classifies it as `DATA_QUALITY`, and triggers operations alerts.
+
+---
+
+### Q35: How do tasks communicate operational metadata in Lakeflow Jobs without violating big data architecture principles?
+**Answer:**  
+Lakeflow tasks communicate via **Task Values**:
+- Inside Databricks tasks: `dbutils.jobs.taskValues.set(key="discovered_count", value=8)` and `dbutils.jobs.taskValues.get(...)`.
+- In Lakeflow Jobs YAML: `{{tasks.<task_name>.values.<value_name>}}`.
+- **Architectural Rule:** Task values are strictly reserved for small metadata primitives (record counts, status booleans, table URIs). Tabular data stays persisted in ADLS Gen2 / Delta Lake and is NEVER passed across task memory.
+
+---
+
+### Q36: How does a Databricks Repair Run work, and why is your lakehouse pipeline design 100% repair-safe?
+**Answer:**  
+- **Repair Run Mechanics:** When a multi-task Lakeflow Job fails midway (e.g. at `dimensional_warehouse`), Databricks allows engineers to trigger a repair run. Databricks re-executes **only the failed task and downstream dependent tasks**, completely bypassing successful upstream stages (`validate_landing_batch`, `bronze_ingestion`, `silver_transformation`).
+- **Idempotency Guarantee:**
+  1. Bronze uses `_ingestion_audit` to skip already-ingested files.
+  2. Silver deduplication windows and table overwrites prevent duplicate generation.
+  3. SCD1 uses null-safe Delta MERGE; SCD2 uses deterministic temporal intervals.
+  4. Fact surrogate key lookups are deterministic.
+
+---
+
+### Q37: How do you implement operational run auditing across your Lakeflow DAG, and why is the publish task configured with `run_if: ALL_DONE`?
+**Answer:**  
+Every execution appends exactly one record to the `delta/operations/job_run_audit` Delta table.
+- **`run_if: ALL_DONE` Semantics:** Ensures the summary task executes whether upstream stages succeeded or failed.
+- **Schema & Nullability:** On successful runs, it captures throughput (Bronze rows, Silver valid/quarantine, fact sales count, duration). On failed early runs, downstream metric fields are stored as `NULL`, while error details (`failure_task`, `failure_classification`, `error_message`) are populated for RCA.
+
 
 

@@ -12,10 +12,27 @@
 | **Module 1: Local PySpark & Quality Framework** | 🟢 **COMPLETE** | 🟢 **PASSED (15 Tests)** | ⏳ **NOT STUDIED / PENDING** |
 | **Module 2: ADF + ADLS Gen2 Cloud Ingestion** | 🟢 **COMPLETE (Deployment-Ready)**<br>*(Cloud Verification Pending)* | 🟢 **PASSED (14 Tests)** | ⏳ **NOT STUDIED / PENDING** |
 | **Module 3: Databricks + Delta Lake + Medallion** | 🟢 **COMPLETE (Local-Verified)**<br>*(Databricks Cloud Pending)* | 🟢 **PASSED (18 Tests)** | ⏳ **NOT STUDIED / PENDING** |
-| **Module 4: Advanced PySpark + Dimensional Modeling + SCD** | 🟢 **COMPLETE (Local-Verified & Hardened)**<br>*(Databricks Cloud Pending)* | 🟢 **PASSED (19 Tests)** | ⏳ **NOT STUDIED / PENDING** |
-| **Total Test Suite Pass** | 🟢 **ALL MODULES PASSING** | 🟢 **66 / 66 TESTS PASSED** | ⏳ **NOT STUDIED / PENDING** |
-| **Module 5: Orchestration + Databricks Jobs + Alerts** | ⏹️ NOT STARTED | ⏹️ NOT STARTED | ⏳ **NOT STUDIED / PENDING** |
+| **Module 5: Lakeflow Jobs Orchestration + Reliability + Operational Monitoring** | 🟢 **COMPLETE (Local-Verified)**<br>*(Databricks Cloud Pending)* | 🟢 **PASSED (12 Tests)** | ⏳ **NOT STUDIED / PENDING** |
+| **Total Test Suite Pass** | 🟢 **ALL MODULES PASSING** | 🟢 **78 / 78 TESTS PASSED** | ⏳ **NOT STUDIED / PENDING** |
 | **Module 6: CI/CD + Serving Architecture** | ⏹️ NOT STARTED | ⏹️ NOT STARTED | ⏳ **NOT STUDIED / PENDING** |
+
+---
+
+## 🎯 Module 5 Detailed Objectives Checklist
+
+- [x] **Lakeflow Jobs Multi-Task DAG Architecture:** Designed and version-controlled production YAML DAG specification in `databricks/jobs/retail_lakehouse_job.yml` (`validate_landing_batch` ➔ `bronze_ingestion` ➔ `silver_transformation` ➔ `[gold_analytics, dimensional_warehouse]` ➔ `final_quality_gate` ➔ `publish_run_summary`).
+- [x] **Reusable Wheel-Ready Task Entrypoints:** Created modular, thin execution entrypoints in `src/orchestration/tasks/` (`validate_landing.py`, `run_bronze.py`, `run_silver.py`, `run_gold.py`, `run_warehouse.py`, `final_quality_gate.py`, `publish_run_summary.py`) reusing Modules 2–4 logic without duplication.
+- [x] **Cross-Task Communication (Task Values):** Implemented thread-safe `TaskValueStore` and documented `dbutils.jobs.taskValues.set/get` (`{{tasks.<task>.values.<val>}}`) passing throughput counts, quarantine metrics, and status booleans without transferring tabular data across memory.
+- [x] **Job-Level Parameterization & Dynamic Values:** Parameterized job definition (`environment`, `ingestion_date`, `adf_run_id`, `storage_account_name`, `container_name`, `catalog_name`, `quarantine_threshold_rate`) with modern dynamic syntax (`{{job.id}}`, `{{job.run_id}}`, `{{job.start_time.iso_date}}`).
+- [x] **Strict Deprecated Syntax Prevention:** Implemented regex validator rejecting obsolete syntax (`{{job_id}}`, `{{run_id}}`, `{{start_date}}`, `{{task_retry_count}}`).
+- [x] **Intelligent Retry Policy & Failure Classification:** Implemented operational taxonomy (`TRANSIENT`, `DATA_QUALITY`, `CONFIGURATION`, `DEPENDENCY`, `UNKNOWN`). Ensured transient storage/network blips are retried while deterministic quality failures (`ReconciliationError`, `WarehouseQualityGateError`) abort immediately without wasteful retries.
+- [x] **Run Condition Controls (`run_if`):** Configured pipeline tasks with `ALL_SUCCESS` and the final audit task with `ALL_DONE` to guarantee operational ledger persistence on both success and failure runs.
+- [x] **Databricks Repair-Run Idempotency:** Documented repair-run mechanics where failed/skipped tasks re-execute without re-running completed upstream stages, guaranteed by idempotent Delta table writes.
+- [x] **Durable Operational Run Audit Table:** Implemented schema and append logic persisting exactly one row per execution to `delta/operations/job_run_audit` capturing throughput, durations, quarantine rates, and nullable failure fields on early aborts.
+- [x] **Operational Health Thresholds & Notifications:** Configured health duration rules (`RUN_DURATION_SECONDS > 3600`) and deployment-ready notifications with sanitized placeholder `<operations-email>` (zero committed secrets).
+- [x] **Local Orchestrator Engine:** Built testable `LakeflowLocalOrchestrator` in `src/orchestration/orchestrator.py` enabling complete local simulation of the Lakeflow Jobs DAG.
+- [x] **Automated Test Suite & Linting:** Added 12 new tests (10 unit + 2 integration) with 78/78 tests passing repository-wide and verified 0 errors with Ruff linter.
+- [x] **Module 5 Study Guide & Documentation:** Authored `docs/08_LAKEFLOW_JOBS_ORCHESTRATION.md` and updated `README.md`, `00_LEARNING_INDEX.md`, `IMPLEMENTATION_MAP.md`, and `INTERVIEW_QA.md`.
 
 ---
 
