@@ -7,6 +7,7 @@
 # COMMAND ----------
 
 from src.orchestration.models import RunContext, TaskValueStore
+from src.orchestration.reliability import classify_failure
 from src.orchestration.tasks.final_quality_gate import execute_final_quality_gate_task
 from src.utils.spark import get_spark_session
 
@@ -26,7 +27,6 @@ context = RunContext(environment=env)
 spark = get_spark_session()
 task_values = TaskValueStore()
 
-# Populate upstream task values passed into widget
 task_values.set("bronze_ingestion", "bronze_rows_ingested", bronze_rows)
 task_values.set("silver_transformation", "reconciliation_passed", True)
 task_values.set("silver_transformation", "silver_quarantine_rows", silver_quarantine)
@@ -36,12 +36,21 @@ task_values.set("dimensional_warehouse", "fact_sales_rows", fact_sales_rows)
 
 # COMMAND ----------
 
-result = execute_final_quality_gate_task(spark, context, task_values)
-
 try:
-    for k, v in task_values.get_all("final_quality_gate").items():
-        dbutils.jobs.taskValues.set(key=k, value=v)
-except Exception as e:
-    print(f"Task values set locally: {e}")
+    result = execute_final_quality_gate_task(spark, context, task_values)
 
-print(f"Final Operational Quality Gate Complete: {result}")
+    for k, v in task_values.get_all("final_quality_gate").items():
+        try:
+            dbutils.jobs.taskValues.set(key=k, value=v)
+        except Exception:
+            pass
+
+    print(f"Final Operational Quality Gate Complete: {result}")
+except Exception as exc:
+    classification = classify_failure(exc)
+    try:
+        dbutils.jobs.taskValues.set(key="failure_classification", value=classification.value)
+        dbutils.jobs.taskValues.set(key="failure_message", value=str(exc)[:500])
+    except Exception:
+        pass
+    raise

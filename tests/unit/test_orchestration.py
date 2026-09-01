@@ -3,17 +3,19 @@ Unit Tests for Module 5: Lakeflow Jobs Orchestration + Reliability + Operational
 
 Validates:
 1. Lakeflow Jobs YAML specification parsing, task graph, parameters, condition tasks, timeouts, retries.
-2. Cycle detection and outcome dependency validation in DAG.
-3. Strict enforcement of modern dynamic variable syntax (rejection of deprecated syntax).
-4. Secret scanning and legacy DBFS mount path elimination.
-5. Thread-safe TaskValueStore operations.
-6. Failure classification taxonomy (Transient vs Data Quality vs Configuration).
-7. Intelligent retry policies (transient retries, data quality non-retryable abort).
-8. Landing batch validation (8 required datasets, date/run filtering, LandingBatchIncompleteError).
-9. String-safe storage URI composition (preserving abfss:// cloud URIs).
-10. Exact batch Bronze ingestion and idempotency.
-11. Operations Unity Catalog DDL generation.
-12. Delta operational audit table schema and persistence (successful and failed runs).
+2. Two-tier retry design: native max_retries: 0 for deterministic-quality tasks, in-process classified retries.
+3. Cycle detection and outcome dependency validation in DAG.
+4. Strict enforcement of modern dynamic variable syntax (rejection of deprecated syntax).
+5. Secret scanning and legacy DBFS mount path elimination.
+6. Thread-safe TaskValueStore operations.
+7. Failure classification taxonomy (Transient vs Data Quality vs Configuration).
+8. Intelligent retry policies (transient retries, data quality non-retryable abort).
+9. Landing batch validation (8 required datasets, date/run filtering, LandingBatchIncompleteError).
+10. String-safe storage URI composition (preserving abfss:// cloud URIs).
+11. Exact batch Bronze ingestion and idempotency.
+12. Operations Unity Catalog DDL generation.
+13. Delta operational audit table schema, root failure resolution, and persistence.
+14. Complete absence of local machine file:/// and /Users/ links in documentation.
 """
 
 from __future__ import annotations
@@ -41,6 +43,9 @@ from src.orchestration.reliability import (
     RetryPolicy,
     classify_failure,
     execute_with_retry,
+)
+from src.orchestration.tasks.publish_run_summary import (
+    resolve_failed_task_from_states,
 )
 from src.orchestration.tasks.validate_landing import (
     LandingBatchIncompleteError,
@@ -85,6 +90,36 @@ def test_lakeflow_job_yaml_structure_and_parameters():
         "catalog_name",
     }
     assert expected_params.issubset(parsed["parameters"])
+
+
+def test_deterministic_quality_tasks_have_native_max_retries_zero():
+    """Verify that tasks susceptible to deterministic data-quality errors configure native max_retries: 0."""
+    parsed = validate_lakeflow_job_yaml(YAML_JOB_PATH)
+    tasks_by_key = {t["task_key"]: t for t in parsed["tasks"]}
+
+    # Tasks with potential deterministic errors must have max_retries: 0 (or omit max_retries)
+    deterministic_tasks = [
+        "validate_landing_batch",
+        "silver_transformation",
+        "dimensional_warehouse",
+        "final_quality_gate",
+    ]
+    for t_key in deterministic_tasks:
+        max_retries = tasks_by_key[t_key].get("max_retries", 0)
+        assert max_retries == 0, f"Task '{t_key}' must have max_retries: 0 to prevent blind Databricks retries on data errors."
+
+
+def test_publish_run_summary_receives_job_start_and_task_states():
+    """Verify that publish_run_summary receives job_start_time and upstream task result states."""
+    parsed = validate_lakeflow_job_yaml(YAML_JOB_PATH)
+    tasks_by_key = {t["task_key"]: t for t in parsed["tasks"]}
+    summary_params = tasks_by_key["publish_run_summary"]["notebook_task"]["base_parameters"]
+
+    assert summary_params.get("job_start_time") == "{{job.start_time.iso_datetime}}"
+    assert summary_params.get("validate_landing_state") == "{{tasks.validate_landing_batch.result_state}}"
+    assert summary_params.get("silver_state") == "{{tasks.silver_transformation.result_state}}"
+    assert summary_params.get("warehouse_state") == "{{tasks.dimensional_warehouse.result_state}}"
+    assert summary_params.get("final_quality_state") == "{{tasks.final_quality_gate.result_state}}"
 
 
 def test_lakeflow_job_yaml_dependencies_and_run_if():
@@ -202,7 +237,6 @@ def test_no_legacy_dbfs_mount_paths_in_repository():
     for s_dir in scan_dirs:
         for p in s_dir.rglob("*"):
             if p.is_file() and p.suffix in (".py", ".sql", ".yml", ".yaml", ".json"):
-                # Exclude the validator file that checks for the forbidden substring
                 if p.name == "validation.py":
                     continue
                 text = p.read_text(encoding="utf-8")
@@ -210,6 +244,20 @@ def test_no_legacy_dbfs_mount_paths_in_repository():
                     offending_files.append(str(p.relative_to(REPO_ROOT)))
 
     assert offending_files == [], f"Found legacy '/mnt/' mount paths in: {offending_files}"
+
+
+def test_no_local_machine_file_links_in_docs():
+    """Verify that zero machine-specific file:/// or /Users/ links exist in documentation files."""
+    scan_files = list((REPO_ROOT / "docs").glob("*.md")) + [REPO_ROOT / "README.md"]
+    offending = []
+
+    for f in scan_files:
+        if f.is_file():
+            text = f.read_text(encoding="utf-8")
+            if "file:///Users" in text or "file:///" in text or "/Users/vijju" in text:
+                offending.append(f.name)
+
+    assert offending == [], f"Found machine-specific local links in docs: {offending}"
 
 
 def test_join_storage_uri_preserves_abfss_scheme():
@@ -277,8 +325,34 @@ def test_retry_policy_execution_transient_vs_deterministic():
 
     with pytest.raises(WarehouseQualityGateError):
         execute_with_retry(dq_func, "dq_task", policy)
-    # MUST be exactly 1 attempt (0 retries) because DATA_QUALITY is non-retryable
     assert dq_attempts == 1
+
+
+def test_resolve_failed_task_from_states_and_values():
+    """Test determining root failed task from result states, error codes, and published task values."""
+    task_order = ["validate_landing_batch", "bronze_ingestion", "silver_transformation", "dimensional_warehouse"]
+    store = TaskValueStore()
+
+    # Scenario 1: All SUCCESS
+    states_ok = {k: "SUCCESS" for k in task_order}
+    errors_none = {k: "" for k in task_order}
+    f_task, f_class, f_msg = resolve_failed_task_from_states(task_order, states_ok, errors_none, store)
+    assert f_task is None
+
+    # Scenario 2: Silver failed with published ReconciliationError
+    store.set("silver_transformation", "failure_classification", "DATA_QUALITY")
+    store.set("silver_transformation", "failure_message", "ReconciliationError: math mismatch")
+
+    states_fail = {
+        "validate_landing_batch": "SUCCESS",
+        "bronze_ingestion": "SUCCESS",
+        "silver_transformation": "FAILED",
+        "dimensional_warehouse": "UPSTREAM_FAILED",  # Downstream cascade
+    }
+    f_task, f_class, f_msg = resolve_failed_task_from_states(task_order, states_fail, errors_none, store)
+    assert f_task == "silver_transformation"  # Must pick root failure, NOT downstream UPSTREAM_FAILED
+    assert f_class == "DATA_QUALITY"
+    assert "ReconciliationError" in f_msg
 
 
 def test_landing_batch_validation_complete_and_incomplete(spark, tmp_path):
@@ -353,12 +427,12 @@ def test_exact_bronze_batch_ingestion_and_idempotency(spark, tmp_path):
     run_a = "run-A"
     run_b = "run-B"
 
-    # Setup Run A (10 rows in customers)
+    # Setup Run A (2 rows in customers)
     dir_a = landing_root / "retail" / "customers" / f"ingestion_date={date_str}" / f"run_id={run_a}"
     dir_a.mkdir(parents=True, exist_ok=True)
     (dir_a / "customers.csv").write_text("customer_id,first_name\n1,Alice\n2,Bob\n")
 
-    # Setup Run B (5 rows in customers)
+    # Setup Run B (2 rows in customers)
     dir_b = landing_root / "retail" / "customers" / f"ingestion_date={date_str}" / f"run_id={run_b}"
     dir_b.mkdir(parents=True, exist_ok=True)
     (dir_b / "customers.csv").write_text("customer_id,first_name\n3,Charlie\n4,David\n")
@@ -398,7 +472,6 @@ def test_operations_unity_catalog_registration(spark, tmp_path):
     audit_table = delta_root / "operations" / "job_run_audit"
     audit_table.mkdir(parents=True, exist_ok=True)
 
-    # Persist dummy delta table
     df = spark.createDataFrame([(1, "dev")], ["id", "env"])
     df.write.format("delta").mode("overwrite").save(str(audit_table))
 
@@ -417,7 +490,7 @@ def test_operations_unity_catalog_registration(spark, tmp_path):
 def test_operational_audit_persistence_and_summary(spark, tmp_path):
     """Test persisting JobRunAudit to Delta table and generating formatted summary."""
     audit_path = tmp_path / "job_run_audit_test"
-    now = datetime.now(timezone.utc)
+    now = datetime(2026, 9, 1, 10, 0, 0, tzinfo=timezone.utc)
 
     audit = JobRunAudit(
         orchestration_run_id="orch-001",
@@ -476,7 +549,7 @@ def test_failed_job_run_audit_with_nullable_downstream_metrics(spark, tmp_path):
         landing_ready=True,
         discovered_dataset_count=8,
         bronze_rows_ingested=100,
-        silver_valid_rows=None,       # Null because failed at Silver
+        silver_valid_rows=None,
         silver_quarantine_rows=None,
         gold_tables_generated=None,
         fact_sales_rows=None,

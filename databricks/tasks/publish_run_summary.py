@@ -9,11 +9,15 @@
 from datetime import datetime, timezone
 
 from src.orchestration.models import RunContext, TaskValueStore
-from src.orchestration.tasks.publish_run_summary import execute_publish_run_summary_task
+from src.orchestration.tasks.publish_run_summary import (
+    execute_publish_run_summary_task,
+    resolve_failed_task_from_states,
+)
 from src.utils.spark import get_spark_session
 
 # COMMAND ----------
 
+# Lakeflow widgets parameters
 dbutils.widgets.text("environment", "dev", "Environment")
 dbutils.widgets.text("ingestion_date", "", "Ingestion Date")
 dbutils.widgets.text("adf_run_id", "", "ADF Run ID")
@@ -23,6 +27,21 @@ dbutils.widgets.text("catalog_name", "retail_lakehouse", "Catalog Name")
 dbutils.widgets.text("delta_root", "", "Delta Root URI")
 dbutils.widgets.text("job_id", "", "Job ID")
 dbutils.widgets.text("job_run_id", "", "Job Run ID")
+dbutils.widgets.text("job_start_time", "", "Job Start Time (ISO)")
+
+# Upstream task result states
+dbutils.widgets.text("validate_landing_state", "", "Validate Landing State")
+dbutils.widgets.text("validate_landing_error", "", "Validate Landing Error")
+dbutils.widgets.text("bronze_state", "", "Bronze State")
+dbutils.widgets.text("bronze_error", "", "Bronze Error")
+dbutils.widgets.text("silver_state", "", "Silver State")
+dbutils.widgets.text("silver_error", "", "Silver Error")
+dbutils.widgets.text("gold_state", "", "Gold State")
+dbutils.widgets.text("gold_error", "", "Gold Error")
+dbutils.widgets.text("warehouse_state", "", "Warehouse State")
+dbutils.widgets.text("warehouse_error", "", "Warehouse Error")
+dbutils.widgets.text("final_quality_state", "", "Final Quality State")
+dbutils.widgets.text("final_quality_error", "", "Final Quality Error")
 
 env = dbutils.widgets.get("environment")
 ingestion_date = dbutils.widgets.get("ingestion_date")
@@ -33,9 +52,23 @@ catalog = dbutils.widgets.get("catalog_name")
 delta_root_param = dbutils.widgets.get("delta_root")
 job_id = dbutils.widgets.get("job_id")
 job_run_id = dbutils.widgets.get("job_run_id")
+job_start_str = dbutils.widgets.get("job_start_time")
 
 storage_base = f"abfss://{container}@{account}.dfs.core.windows.net"
 delta_root = delta_root_param if delta_root_param else f"{storage_base}/delta"
+
+# Parse job_start_time
+start_time = None
+if job_start_str:
+    try:
+        # Handle ISO strings like 2026-09-01T15:30:00Z or +00:00
+        clean_iso = job_start_str.replace("Z", "+00:00")
+        start_time = datetime.fromisoformat(clean_iso)
+    except Exception:
+        start_time = None
+
+if start_time is None:
+    start_time = datetime.now(timezone.utc)
 
 context = RunContext(
     databricks_job_id=job_id if job_id else "retail_lakehouse_lakeflow_job",
@@ -51,44 +84,69 @@ context = RunContext(
 
 spark = get_spark_session()
 task_values = TaskValueStore()
-task_results = {}
-start_time = datetime.now(timezone.utc)
 
 # COMMAND ----------
 
 # Fetch task values set by upstream tasks in the active Lakeflow Job run if available
-try:
-    landing_ready = dbutils.jobs.taskValues.get(taskKey="validate_landing_batch", key="landing_ready", default=None)
-    discovered_count = dbutils.jobs.taskValues.get(taskKey="validate_landing_batch", key="discovered_dataset_count", default=None)
-    bronze_rows = dbutils.jobs.taskValues.get(taskKey="bronze_ingestion", key="bronze_rows_ingested", default=None)
-    silver_valid = dbutils.jobs.taskValues.get(taskKey="silver_transformation", key="silver_valid_rows", default=None)
-    silver_quarantine = dbutils.jobs.taskValues.get(taskKey="silver_transformation", key="silver_quarantine_rows", default=None)
-    quarantine_rate = dbutils.jobs.taskValues.get(taskKey="silver_transformation", key="quarantine_rate", default=None)
-    quarantine_alert = dbutils.jobs.taskValues.get(taskKey="silver_transformation", key="quarantine_alert_triggered", default=None)
-    fact_sales = dbutils.jobs.taskValues.get(taskKey="dimensional_warehouse", key="fact_sales_rows", default=None)
-    quality_status = dbutils.jobs.taskValues.get(taskKey="final_quality_gate", key="overall_quality_status", default=None)
+task_keys = [
+    "validate_landing_batch",
+    "bronze_ingestion",
+    "silver_transformation",
+    "gold_analytics",
+    "dimensional_warehouse",
+    "final_quality_gate",
+]
 
-    task_values.set("validate_landing_batch", "landing_ready", landing_ready)
-    task_values.set("validate_landing_batch", "discovered_dataset_count", discovered_count)
-    task_values.set("bronze_ingestion", "bronze_rows_ingested", bronze_rows)
-    task_values.set("silver_transformation", "silver_valid_rows", silver_valid)
-    task_values.set("silver_transformation", "silver_quarantine_rows", silver_quarantine)
-    task_values.set("silver_transformation", "quarantine_rate", quarantine_rate)
-    task_values.set("silver_transformation", "quarantine_alert_triggered", quarantine_alert)
-    task_values.set("dimensional_warehouse", "fact_sales_rows", fact_sales)
-    task_values.set("final_quality_gate", "overall_quality_status", quality_status)
-except Exception as e:
-    print(f"Reading task values from dbutils context (fallback to local defaults): {e}")
+for t_key in task_keys:
+    try:
+        for k in ("landing_ready", "discovered_dataset_count", "bronze_rows_ingested",
+                  "silver_valid_rows", "silver_quarantine_rows", "quarantine_rate",
+                  "quarantine_alert_triggered", "gold_tables_generated", "fact_sales_rows",
+                  "overall_quality_status", "failure_classification", "failure_message"):
+            val = dbutils.jobs.taskValues.get(taskKey=t_key, key=k, default=None)
+            if val is not None:
+                task_values.set(t_key, k, val)
+    except Exception:
+        pass
 
-overall_status = "SUCCESS" if task_values.get("final_quality_gate", "overall_quality_status") == "PASSED" else "FAILED"
+# Collect task states and error codes
+task_states = {
+    "validate_landing_batch": dbutils.widgets.get("validate_landing_state"),
+    "bronze_ingestion": dbutils.widgets.get("bronze_state"),
+    "silver_transformation": dbutils.widgets.get("silver_state"),
+    "gold_analytics": dbutils.widgets.get("gold_state"),
+    "dimensional_warehouse": dbutils.widgets.get("warehouse_state"),
+    "final_quality_gate": dbutils.widgets.get("final_quality_state"),
+}
+
+task_errors = {
+    "validate_landing_batch": dbutils.widgets.get("validate_landing_error"),
+    "bronze_ingestion": dbutils.widgets.get("bronze_error"),
+    "silver_transformation": dbutils.widgets.get("silver_error"),
+    "gold_analytics": dbutils.widgets.get("gold_error"),
+    "dimensional_warehouse": dbutils.widgets.get("warehouse_error"),
+    "final_quality_gate": dbutils.widgets.get("final_quality_error"),
+}
+
+# Determine root failed task
+fail_task, fail_class, fail_msg = resolve_failed_task_from_states(
+    task_order=task_keys,
+    task_states=task_states,
+    task_errors=task_errors,
+    task_values=task_values,
+)
+
+overall_status = "FAILED" if fail_task else "SUCCESS"
 
 audit = execute_publish_run_summary_task(
     spark=spark,
     context=context,
     task_values=task_values,
-    task_results=task_results,
     overall_status=overall_status,
     start_time=start_time,
+    failure_task=fail_task,
+    failure_classification=fail_class,
+    error_message=fail_msg,
 )
 
-print(f"Operational Run Audit Recorded: ID={audit.orchestration_run_id}, Status={audit.final_status}")
+print(f"Operational Run Audit Recorded: ID={audit.orchestration_run_id}, Status={audit.final_status}, Duration={audit.duration_seconds:.2f}s")

@@ -6,7 +6,8 @@
 
 # COMMAND ----------
 
-from src.orchestration.models import RunContext, TaskValueStore
+from src.orchestration.models import FailureClassification, RunContext, TaskValueStore
+from src.orchestration.reliability import RetryPolicy, classify_failure, execute_with_retry
 from src.orchestration.tasks.run_warehouse import execute_warehouse_task
 from src.utils.spark import get_spark_session
 
@@ -37,15 +38,29 @@ context = RunContext(
 
 spark = get_spark_session()
 task_values = TaskValueStore()
+policy = RetryPolicy(max_retries=1, retryable_classifications={FailureClassification.TRANSIENT})
 
 # COMMAND ----------
 
-result = execute_warehouse_task(spark, context, task_values)
-
 try:
-    for k, v in task_values.get_all("dimensional_warehouse").items():
-        dbutils.jobs.taskValues.set(key=k, value=v)
-except Exception as e:
-    print(f"Task values set locally: {e}")
+    result, _, _ = execute_with_retry(
+        lambda: execute_warehouse_task(spark, context, task_values),
+        "dimensional_warehouse",
+        policy,
+    )
 
-print(f"Dimensional Warehouse Complete: {result}")
+    for k, v in task_values.get_all("dimensional_warehouse").items():
+        try:
+            dbutils.jobs.taskValues.set(key=k, value=v)
+        except Exception:
+            pass
+
+    print(f"Dimensional Warehouse Complete: {result}")
+except Exception as exc:
+    classification = classify_failure(exc)
+    try:
+        dbutils.jobs.taskValues.set(key="failure_classification", value=classification.value)
+        dbutils.jobs.taskValues.set(key="failure_message", value=str(exc)[:500])
+    except Exception:
+        pass
+    raise

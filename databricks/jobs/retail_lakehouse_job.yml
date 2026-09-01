@@ -55,8 +55,7 @@ resources:
               container_name: "{{job.parameters.container_name}}"
               catalog_name: "{{job.parameters.catalog_name}}"
           timeout_seconds: 600
-          max_retries: 2
-          min_retry_interval_millis: 10000
+          max_retries: 0
 
         # Task 2: Bronze Layer Raw Delta Ingestion
         - task_key: bronze_ingestion
@@ -90,8 +89,7 @@ resources:
               catalog_name: "{{job.parameters.catalog_name}}"
               quarantine_threshold_rate: "{{job.parameters.quarantine_threshold_rate}}"
           timeout_seconds: 1800
-          max_retries: 1
-          min_retry_interval_millis: 15000
+          max_retries: 0
 
         # Task 4: Conditional If/Else Check on Quarantine Rate
         - task_key: check_quarantine_threshold
@@ -146,8 +144,7 @@ resources:
               container_name: "{{job.parameters.container_name}}"
               catalog_name: "{{job.parameters.catalog_name}}"
           timeout_seconds: 2400
-          max_retries: 1
-          min_retry_interval_millis: 15000
+          max_retries: 0
 
         # Task 6: Final Operational Quality Gate
         - task_key: final_quality_gate
@@ -176,12 +173,25 @@ resources:
             base_parameters:
               job_id: "{{job.id}}"
               job_run_id: "{{job.run_id}}"
+              job_start_time: "{{job.start_time.iso_datetime}}"
               environment: "{{job.parameters.environment}}"
               ingestion_date: "{{job.parameters.ingestion_date}}"
               adf_run_id: "{{job.parameters.adf_run_id}}"
               storage_account_name: "{{job.parameters.storage_account_name}}"
               container_name: "{{job.parameters.container_name}}"
               catalog_name: "{{job.parameters.catalog_name}}"
+              validate_landing_state: "{{tasks.validate_landing_batch.result_state}}"
+              validate_landing_error: "{{tasks.validate_landing_batch.error_code}}"
+              bronze_state: "{{tasks.bronze_ingestion.result_state}}"
+              bronze_error: "{{tasks.bronze_ingestion.error_code}}"
+              silver_state: "{{tasks.silver_transformation.result_state}}"
+              silver_error: "{{tasks.silver_transformation.error_code}}"
+              gold_state: "{{tasks.gold_analytics.result_state}}"
+              gold_error: "{{tasks.gold_analytics.error_code}}"
+              warehouse_state: "{{tasks.dimensional_warehouse.result_state}}"
+              warehouse_error: "{{tasks.dimensional_warehouse.error_code}}"
+              final_quality_state: "{{tasks.final_quality_gate.result_state}}"
+              final_quality_error: "{{tasks.final_quality_gate.error_code}}"
           timeout_seconds: 300
           max_retries: 1
 

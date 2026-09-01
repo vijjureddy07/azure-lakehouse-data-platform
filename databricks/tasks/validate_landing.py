@@ -6,7 +6,8 @@
 
 # COMMAND ----------
 
-from src.orchestration.models import RunContext, TaskValueStore
+from src.orchestration.models import FailureClassification, RunContext, TaskValueStore
+from src.orchestration.reliability import RetryPolicy, classify_failure, execute_with_retry
 from src.orchestration.tasks.validate_landing import execute_validate_landing_task
 from src.utils.spark import get_spark_session
 
@@ -48,16 +49,30 @@ context = RunContext(
 
 spark = get_spark_session()
 task_values = TaskValueStore()
+policy = RetryPolicy(max_retries=1, retryable_classifications={FailureClassification.TRANSIENT})
 
 # COMMAND ----------
 
-result = execute_validate_landing_task(spark, context, task_values)
-
-# Publish Lakeflow Task Values
 try:
-    for k, v in task_values.get_all("validate_landing_batch").items():
-        dbutils.jobs.taskValues.set(key=k, value=v)
-except Exception as e:
-    print(f"Task values set locally (dbutils not in job context): {e}")
+    result, _, _ = execute_with_retry(
+        lambda: execute_validate_landing_task(spark, context, task_values),
+        "validate_landing_batch",
+        policy,
+    )
 
-print(f"Validate Landing Batch Complete: {result}")
+    # Publish Lakeflow Task Values
+    for k, v in task_values.get_all("validate_landing_batch").items():
+        try:
+            dbutils.jobs.taskValues.set(key=k, value=v)
+        except Exception:
+            pass
+
+    print(f"Validate Landing Batch Complete: {result}")
+except Exception as exc:
+    classification = classify_failure(exc)
+    try:
+        dbutils.jobs.taskValues.set(key="failure_classification", value=classification.value)
+        dbutils.jobs.taskValues.set(key="failure_message", value=str(exc)[:500])
+    except Exception:
+        pass
+    raise
