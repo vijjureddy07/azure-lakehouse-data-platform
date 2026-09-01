@@ -1,9 +1,11 @@
-# Interview Questions & Technical Answers (Module 1)
+# Interview Questions & Technical Answers (Modules 1–6)
 
 > **Workflow Rule:** BUILD FIRST → DOCUMENT EVERYTHING → LEARN LATER  
-> Curated Data Engineering and PySpark interview questions mapped to this project's implementation.
+> Curated Data Engineering, Lakehouse, and Cloud Architecture interview questions mapped to this project's implementation.
 
 ---
+
+## PySpark & Data Engineering Foundations (Module 1 Focus)
 
 ### Q1: Why do we use PySpark over native Python/Pandas for this data platform?
 **Answer:**  
@@ -98,224 +100,81 @@ Standard Azure Blob storage uses a flat object store where directory structures 
 ### Q14: How does a metadata-driven ingestion architecture work in Azure Data Factory?
 **Answer:**  
 Instead of creating dozens of hardcoded pipelines, we use a Master-Child orchestration pattern:
-1. **Master Pipeline (`pl_master_retail_ingestion`):** Defines a metadata configuration array specifying dataset parameters (`dataset_name`, `source_relative_url`, `destination_file_name`, format).
-2. **ForEach Activity:** Iterates across the metadata array items concurrently.
-3. **Child Pipeline (`pl_ingest_single_file`):** A single generic, reusable pipeline containing a parameterized Copy Activity that reads from a parameterized HTTP source dataset and writes directly to a parameterized ADLS Gen2 landing dataset.
-When a new dataset needs to be onboarded, we append a JSON object to the metadata configuration without editing visual pipeline canvases.
+1. **Master Pipeline (`pl_master_retail_ingestion`):** Contains a parameterized `ForEach` activity that iterates over a metadata JSON array defining dataset names and source paths for all 8 entities.
+2. **Child Pipeline (`pl_ingest_single_file`):** A generic, reusable pipeline containing a binary `Copy Activity` parameterized with `@dataset().file_name` and `@dataset().folder_path`.
+3. **Adding New Datasets:** New datasets can be onboarded solely by updating the metadata configuration array without modifying the visual pipeline canvas or redeploying ADF assets.
 
 ---
 
-### Q15: Why is Managed Identity with Azure RBAC preferred over Storage Account Keys or SAS Tokens?
+### Q15: Why is Managed Identity with Azure RBAC preferred over Storage Account Access Keys?
 **Answer:**  
-- **Storage Account Keys:** Grant unrestricted root-level access to the entire storage account, bypass fine-grained access policies, cannot be scoped to individual containers, and introduce credential leakage risks if committed to code repositories.
-- **SAS Tokens:** Expire over time, require key vault storage, and demand ongoing manual rotation workflows.
-- **System-Assigned Managed Identity:** Leverages Microsoft Entra ID to authenticate ADF directly to ADLS Gen2 with zero stored passwords or keys. The ADF resource is granted the least-privilege role `Storage Blob Data Contributor`. Azure automatically handles token issuance, rotation, and lifecycle management without code intervention.
+1. **Zero Hardcoded Secrets:** Managed Identities authenticate directly against Azure Entra ID (formerly Azure AD). No shared keys or SAS tokens exist in version control, ARM templates, or ADF linked services.
+2. **Least Privilege Principle:** Azure RBAC allows granting scoped permissions (e.g., `Storage Blob Data Contributor` specifically on the `lakehouse` container) without exposing account-wide administrative master keys that could delete or modify unrelated resources.
+3. **Automated Credential Rotation:** Azure handles certificate rotation and identity token lifecycle automatically, eliminating manual secret rotation outages.
 
 ---
 
-### Q16: When would you use Azure RBAC vs ADLS Gen2 POSIX Access Control Lists (ACLs)?
+### Q16: How do you guarantee raw file fidelity during ADF ingestion into ADLS Gen2?
 **Answer:**  
-- **Azure RBAC:** Coarse-grained access control applied at the Subscription, Resource Group, Storage Account, or Container level (e.g., granting ADF or Databricks `Storage Blob Data Contributor` across the entire `lakehouse` container).
-- **POSIX ACLs:** Fine-grained access control applied directly to specific subdirectories and individual files within an HNS-enabled storage account (e.g., granting Data Science teams read-only access to `lakehouse/curated/features/` while restricting access to `lakehouse/raw/pii/`).
+In the child pipeline's Copy Activity, we use **Binary Copy** (`type: "Binary"`). This streams raw byte streams directly from the source HTTP endpoints into ADLS Gen2 without parsing schemas, mutating delimiters, converting character encodings, or altering timestamps. Raw CSV files land as exact CSVs, and JSON lines land as exact JSONs, preserving an immutable source-of-truth landing zone.
 
 ---
 
-### Q17: Why must the raw landing zone preserve source files without transformation?
+## Databricks & Delta Lake Medallion Architecture (Module 3 Focus)
+
+### Q17: What is the Delta Lake Transaction Log (`_delta_log`), and how does it guarantee ACID transactions?
 **Answer:**  
-1. **Source Fidelity & Auditability:** Preserving the exact original byte stream (CSV as CSV, JSON as JSON) provides an immutable record of what external upstream systems delivered, enabling compliance verification and historical audit.
-2. **Decoupling Transport from Compute:** Ingestion (ADF Copy Activity) is lightweight, fast, and serverless. Heavy computation, schema enforcement, deduplication, and transformations are offloaded to distributed compute engines (Spark / Delta Lake in Module 3).
-3. **Reprocessability:** If downstream transformation logic contains a bug or business rules change, having unaltered raw landing data partitioned by `ingestion_date` and `run_id` allows backfilling without requesting re-exports from source providers.
+Delta Lake maintains a directory of JSON-formatted commit files in `_delta_log/*.json`. Every transaction (append, update, delete, merge) writes a new commit file listing added and removed Parquet files. Concurrency is managed via **Optimistic Concurrency Control (OCC)** with atomic commit protocols. Readers read snapshot state as of a specific commit version, guaranteeing isolated, repeatable reads and atomic commits without dirty read anomalies.
 
 ---
 
-## 3. Azure Databricks, Delta Lake & Medallion Architecture (Module 3)
-
-### Q18: What is the architectural difference between Landing files in ADLS Gen2 and Bronze Delta tables?
+### Q18: What is the architectural purpose of each layer in the Medallion Lakehouse?
 **Answer:**  
-- **Landing Files:** Raw, immutable files (CSV, JSON) sitting in the storage account landing zone (`landing/retail/<dataset>/ingestion_date=*/run_id=*/*`) exactly as emitted by upstream systems. They lack ACID transactions, schema enforcement, and query optimization.
-- **Bronze Delta Tables:** Structured Delta Lake tables (`output/delta/bronze/<dataset>/` or `retail_lakehouse.bronze.<dataset>`) that ingest the raw files verbatim (as strings) while appending rich system lineage metadata columns (`_source_file`, `_source_path`, `_ingestion_date`, `_adf_run_id`, `_ingested_timestamp`). Bronze provides ACID transaction isolation, fast columnar query scans, and an ingestion audit trail without altering raw column values.
+- **Bronze (Raw Ingestion):** Append-only raw data preserving original source fidelity with ingestion audit metadata (`_source_file`, `_source_path`, `_ingestion_date`, `_adf_run_id`, `_ingested_timestamp`).
+- **Silver (Cleaned & Conformed):** Deduplicated, validated, strongly-typed data with business rules enforced. Bad/orphan records are routed to a parallel quarantine sink with error codes, while valid data supports enterprise transformations.
+- **Gold (Business Aggregates & KPIs):** High-performance analytical aggregates and KPI tables designed for executive reporting, BI dashboards, and ad-hoc SQL querying.
 
 ---
 
-### Q19: How does the Delta Lake transaction log (`_delta_log`) guarantee ACID properties?
+### Q19: How does Delta Lake handle schema enforcement vs. schema evolution?
 **Answer:**  
-Delta Lake maintains an ordered sequence of JSON commit files (`00000000000000000000.json`, etc.) in the `_delta_log/` directory:
-1. **Atomicity:** When a transaction modifies a table, it writes new Parquet data files and attempts to commit a single JSON log entry containing `add` or `remove` file actions. If any part of the write fails, the commit JSON is not created, meaning readers will never see the partial files.
-2. **Consistency:** Readers scan the transaction log to construct the table state. State transitions are strictly governed by schema invariants and constraints.
-3. **Isolation (Snapshot Isolation):** Readers construct a snapshot of the table at the exact transaction log version active when their query began, unaffected by concurrent writes.
-4. **Durability:** Once the commit file is written to durable cloud object storage (ADLS Gen2), the transaction is permanent. Checkpoint Parquet files are generated every 10 commits to optimize snapshot reconstruction.
+- **Schema Enforcement:** By default, Delta Lake rejects any write operation containing columns or data types that do not match the target table's schema, preventing silent table corruption.
+- **Schema Evolution:** When intentional schema changes occur (e.g., adding a new attribute), engineers specify `.option("mergeSchema", "true")`. Delta updates table metadata to include the new column, backfilling previous files with `NULL` on read.
 
 ---
 
-### Q20: How does Delta Lake implement time travel, and what are its production use cases?
+### Q20: Explain how Delta Lake Time Travel works under the hood.
 **Answer:**  
-Because Delta Lake's transaction log tracks every file added and removed across every commit without immediately deleting underlying Parquet files, users can query past snapshots:
+Because Delta Lake's transaction log tracks the history of added and removed files per commit, querying `VERSION AS OF N` or `TIMESTAMP AS OF '2026-08-31'` instructs the Delta engine to reconstruct the table snapshot by reading only the transaction log commits up to that point. It skips newer files and reads historical Parquet files that were active at that version.
+
+---
+
+## Dimensional Modeling & SCD Architecture (Module 4 Focus)
+
+### Q21: What is the difference between SCD Type 1 and SCD Type 2?
+**Answer:**  
+- **SCD Type 1 (Overwrite):** Overwrites historical attribute values with current values in-place. No historical record is preserved. Surrogate keys remain unchanged. (e.g., updating `current_retail_price` or `category` in `dim_product`).
+- **SCD Type 2 (Historical Versioning):** Preserves full historical context by creating a new record version when tracked attributes change. Uses `effective_from`, `effective_to` (NULL for current), `is_current`, and `version_number`. (e.g., tracking customer loyalty tier upgrades or address relocations in `dim_customer`).
+
+---
+
+### Q22: Why should distributed lakehouses avoid `monotonically_increasing_id()` for surrogate keys?
+**Answer:**  
+`monotonically_increasing_id()` generates 64-bit integers where the upper 33 bits represent the partition ID and the lower 31 bits represent the row ID within the partition. This produces non-consecutive, sparse integer IDs (e.g., 0, 8589934592, 17179869184) that change whenever partition boundaries shift. In dimensional modeling, compact surrogate keys are allocated deterministically using `max_existing_key + ROW_NUMBER() OVER (ORDER BY natural_key)`.
+
+---
+
+### Q23: How does Point-in-Time (PIT) Surrogate Key resolution work for Fact tables?
+**Answer:**  
+When populating `fact_sales`, transaction rows are joined to `dim_customer` on `customer_id` using a **non-equi temporal join**:
 ```sql
--- Query by version
-SELECT * FROM retail_lakehouse.silver.customers VERSION AS OF 2;
-
--- Query by timestamp
-SELECT * FROM retail_lakehouse.silver.customers TIMESTAMP AS OF '2026-08-31 10:00:00';
+order_timestamp >= effective_from AND (order_timestamp < effective_to OR effective_to IS NULL)
 ```
-**Production Use Cases:**
-1. **Auditing & Reproducibility:** Re-running financial or ML models against the exact data state from the prior month or quarter.
-2. **Rollback & Disaster Recovery:** Restoring a table after an accidental write or bad data deployment using `RESTORE TABLE ... TO VERSION AS OF N`.
-3. **Debugging & Root Cause Analysis:** Comparing data before and after an ETL job failure to isolate defective incoming records.
+This resolves the historical surrogate `customer_key` that was active when the customer made the purchase, preventing historical revenue from being retroactively attributed to subsequent loyalty tiers or relocations.
 
 ---
 
-### Q21: Explain the difference between Delta Lake Schema Enforcement and Schema Evolution.
-**Answer:**  
-- **Schema Enforcement (Schema Validation):** The default safety mechanism in Delta Lake. If an incoming DataFrame has columns not defined in the target table schema or has conflicting data types, Delta throws an `AnalysisException` and rejects the write. This prevents accidental schema corruption and column pollution.
-- **Schema Evolution:** Explicitly opted-in capability allowing Delta to alter its schema dynamically during a write operation. Enabled by setting `.option("mergeSchema", "true")` during an append/overwrite or `spark.databricks.delta.schema.autoMerge.enabled = true`. Newly added columns in the DataFrame are automatically appended to the table schema with null values populated for historical records.
-
----
-
-### Q22: How does Delta MERGE provide idempotency compared to simple APPEND or OVERWRITE?
-**Answer:**  
-- **Append:** Adds all incoming rows unconditionally. Rerunning a pipeline causes duplicated records.
-- **Overwrite:** Replaces the entire table or partition. While idempotent, it cannot perform row-level incremental updates without rewriting the whole partition.
-- **Delta MERGE (Upsert):** Evaluates a match condition on primary keys (`ON target.id = source.id`). When matched, it updates existing records in place; when not matched, it inserts new records; and unreferenced records remain untouched. Rerunning the exact same source dataset on an already updated table matches all keys, updates with identical values, inserts 0 new rows, and produces 0 duplicates.
-
----
-
-### Q23: How does Unity Catalog enable enterprise data governance with zero stored credentials?
-**Answer:**  
-Unity Catalog introduces a central 3-level namespace (`<catalog>.<schema>.<table>`) across all Databricks workspaces. Rather than embedding storage access keys or SAS tokens in notebooks or using legacy DBFS mounts:
-1. An **Azure Databricks Access Connector** is deployed with a System-Assigned Managed Identity in Microsoft Entra ID.
-2. The Access Connector is granted the Azure RBAC role **Storage Blob Data Contributor** on ADLS Gen2.
-3. In Unity Catalog, an administrator creates a **Storage Credential** pointing to the Access Connector resource ID, and an **External Location** pointing to the ADLS Gen2 container URL (`abfss://...`).
-4. Data engineers and analysts query tables using standard ANSI SQL permissions (`GRANT SELECT ON TABLE...`) without having direct storage keys or seeing cloud connection strings.
-
----
-
-## 4. Advanced PySpark, Dimensional Modeling & Slowly Changing Dimensions (Module 4)
-
-### Q24: What are surrogate keys, and why should you avoid `monotonically_increasing_id()` in distributed Spark data warehouses?
-**Answer:**  
-- **Surrogate Keys:** Artificial, single-column integer keys generated by the data warehouse (e.g. `customer_key = 101`) to uniquely identify dimension records independently of natural business keys (`customer_id = 'C-001'`). They isolate the warehouse from upstream natural key changes, enable SCD Type 2 historical versioning, and optimize join performance in columnar analytical databases.
-- **Why Avoid `monotonically_increasing_id()`:** Spark's `monotonically_increasing_id()` generates 64-bit non-contiguous integers with wide gaps where the upper 33 bits encode the partition ID. Because partition assignments and execution planning change dynamically based on cluster size and shuffles, this function is **non-deterministic** across pipeline runs.
-- **The Correct Pattern:** Allocate deterministic surrogate keys by reading the existing maximum key from the target Delta table (`max_existing_key`) and adding `ROW_NUMBER() OVER (ORDER BY natural_key)`.
-
----
-
-### Q25: Explain the difference between SCD Type 1 and SCD Type 2 with concrete retail examples.
-**Answer:**  
-- **SCD Type 1 (In-Place Overwrite):** Directly overwrites previous attribute values in the dimension table without preserving history.
-  - *Example:* Fixing a typo in a customer's last name or updating a product's subcategory in `dim_product`.
-  - *Implementation in Delta:* Executed via `DeltaTable.merge()` matching on natural key `product_id` and updating attributes in place while preserving the original `product_key`.
-- **SCD Type 2 (Historical Versioning):** Inserts a new dimension row whenever tracked attributes change, establishing non-overlapping validity intervals (`[effective_from, effective_to)`), a current record flag (`is_current`), and an incremented version number (`version_number`).
-  - *Example:* A customer moving from Texas to California or upgrading from `GOLD` to `PLATINUM` loyalty tier in `dim_customer`.
-  - *Implementation in Delta:* Compute SHA-256 attribute hash over tracked columns, left join incoming records against current active records (`is_current = true`), expire matched records with `effective_to = now, is_current = false` via Delta MERGE, and append new version records.
-
----
-
-### Q26: Why is joining fact transactions to `is_current = true` in SCD Type 2 dimensions an architectural error?
-**Answer:**  
-Joining fact records to the active dimension record (`is_current = true`) causes **historical misattribution**:
-- *The Flaw:* If an order was placed in February 2026 when the customer was in the `SILVER` loyalty tier, and the customer upgraded to `PLATINUM` in June 2026, joining February orders to `is_current = true` attributes February sales to the `PLATINUM` tier, corrupting historical performance reports.
-- *The Solution (Point-in-Time Fact Resolution):* Join the fact table using the transaction's event timestamp against the dimension's historical validity interval:
-```sql
-ON fact.customer_id = dim.customer_id
-AND fact.order_timestamp >= dim.effective_from
-AND (fact.order_timestamp < dim.effective_to OR dim.effective_to IS NULL)
-```
-
----
-
-### Q27: How do you handle Late-Arriving Dimensions or Orphan Foreign Keys in fact tables without dropping rows?
-**Answer:**  
-Use the **Unknown Member Pattern (Surrogate Key 0)**:
-1. Every dimension table is initialized with an "Unknown" record having surrogate key `0` (e.g. `dim_customer` has `customer_key = 0, customer_id = 'UNKNOWN', loyalty_tier = 'UNKNOWN'`; `dim_date` has `date_key = 0, full_date = 1900-01-01`).
-2. When resolving foreign keys during fact table creation, wrap the lookup in `COALESCE(dim.surrogate_key, 0)`.
-3. If an incoming transaction references a customer or product that has not yet been processed in the dimension table, the fact row is preserved with foreign key `0` rather than being dropped by an inner join or inserting a `NULL` foreign key.
-4. When the late-arriving dimension record is subsequently ingested, an update process can backfill the foreign key from `0` to the allocated surrogate key.
-
----
-
-### Q28: What are Enterprise Data Quality Gates, and how do they differ from simple data cleaning?
-**Answer:**  
-- **Data Cleaning:** Transforming, formatting, and standardizing data during ingestion and Silver conformance (e.g. regex trimming, date formatting).
-- **Data Quality Gates:** Automated, programmatic validation suites executed prior to publishing data to the warehouse or serving layer. They validate 6 core pillars:
-  1. *Completeness:* Enforcing non-null surrogate keys, grain keys, and essential measures.
-  2. *Uniqueness:* Enforcing 0 duplicate primary keys on dimensions and 1 row per grain on facts.
-  3. *Referential Integrity:* Proving 0 orphan foreign keys exist across all fact-dimension relationships.
-  4. *SCD2 Temporal Invariants:* Proving exactly one active version exists per natural key with non-overlapping half-open intervals.
-  5. *Measure Validity:* Enforcing business rules (`gross_amount >= net_amount`, `quantity > 0`, `profit_amount = net_amount - cost_amount`).
-  6. *Reconciliation:* Verifying mathematical and financial equality between source and target layers.
-- If a `CRITICAL` gate fails, the pipeline raises `WarehouseQualityGateError` and terminates immediately, logging audit records to `delta/warehouse/quality_audit`.
-
----
-
-### Q29: What is the difference between Star Schema and Snowflake Schema, and why is Star Schema preferred in Delta Lake?
-**Answer:**  
-- **Star Schema:** Completely denormalizes dimension tables around a central fact table. Each dimension is represented by a single table (e.g. `dim_product` contains `category`, `subcategory`, and `brand` in one flat row).
-- **Snowflake Schema:** Normalizes dimension tables into multiple related sub-tables (e.g. `dim_product` joins to `dim_subcategory`, which joins to `dim_category`).
-- **Why Star Schema is Preferred in Delta Lake / Lakehouse:**
-  1. *Join Minimization:* Distributed joins across multiple tables cause expensive network shuffles in Apache Spark. Star schemas minimize joins to a single hop between facts and dimensions.
-  2. *Columnar Scan Efficiency:* Delta Lake's columnar Parquet storage and file skipping (Data Skipping / Z-Order) make wide denormalized tables highly efficient to scan and compress.
-  3. *BI Performance:* Modern analytical tools (Power BI DirectLake, Azure Synapse) are architected specifically to generate optimized queries against flat star schema dimensions.
-
----
-
-### Q30: How do you prove 100% financial and row-count reconciliation between conformed Silver tables and the Warehouse Fact layer?
-**Answer:**  
-In `reconcile_warehouse_sales()`, compute aggregates on the source (`silver_order_items` joined to `silver_orders`) and target (`fact_sales`):
-1. **Row Count:** Confirm `COUNT(eligible_silver_order_items) == COUNT(fact_sales)`.
-2. **Gross Amount:** Confirm `SUM(silver_gross) == SUM(fact_gross)` using `DecimalType(10, 2)` (0 diff).
-3. **Discount Amount:** Confirm `SUM(silver_discount) == SUM(fact_discount)` (0 diff).
-4. **Net Amount:** Confirm `SUM(silver_net) == SUM(fact_net)` (0 diff).
-If any absolute difference is greater than `0.00`, raise `ValueError` and halt the pipeline.
-
----
-
-### Q31: How do you handle initial SCD Type 2 effective dates during historical warehouse backfills vs subsequent incremental loads?
-**Answer:**  
-1. **The Trap:** Setting `effective_from = signup_date` during initial dimension load. `signup_date` is a customer business attribute, NOT the technical validity boundary for the customer's current state. If a customer placed historical orders before their recorded `signup_date`, or if `signup_date` is in the future relative to historical orders, point-in-time joins fail and resolve to unknown surrogate key 0.
-2. **The Correct Technical Convention:** For the initial warehouse backfill, set `initial_effective_from = MIN(valid Silver order_timestamp)`. The initial customer snapshot is treated as valid from the warehouse reporting start because earlier attribute versions do not exist in the source.
-3. **Subsequent Incremental Loads:** Set `effective_from = batch_timestamp` (or source CDC timestamp).
-4. **Out-of-Order Safety:** If an incremental change is received with `change_timestamp <= active_version.effective_from`, raise `SCD2TemporalOrderError` before modifying the Delta table to prevent corrupted negative or overlapping intervals.
-
----
-
-### Q32: Why must you use null-safe equality operators (`<=>`) when implementing SCD Type 1 Delta Lake merges?
-**Answer:**  
-In ANSI SQL and Apache Spark, comparison operators like `!=` evaluate to `NULL` (falsy) whenever either operand is `NULL`.
-- *The Failure Mode:* If a product attribute transitions from `NULL -> "Accessories"` or `"Accessories" -> NULL`, a merge update condition like `target.subcategory != source.subcategory` evaluates to `NULL` (not TRUE), causing the update to be silently skipped.
-- *The Solution:* Enforce Spark SQL's null-safe equality operator `<=>`:
-```sql
-WHEN MATCHED AND (
-    NOT (target.product_name <=> source.product_name) OR
-    NOT (target.subcategory <=> source.subcategory) OR
-    NOT (target.unit_price <=> source.unit_price)
-) THEN UPDATE SET ...
-```
-`NOT (target.col <=> source.col)` evaluates to `TRUE` if values differ OR if one is `NULL` and the other is non-`NULL`.
-
----
-
-## Module 5: Lakeflow Jobs Orchestration, Reliability & Operational Monitoring
-
-### Q33: How do you orchestrate your Omnichannel Retail Lakehouse in Azure Databricks, and what is Lakeflow Jobs?
-**Answer:**  
-In modern Databricks architecture, **Lakeflow Jobs** (formerly known as Databricks Workflows) is the unified orchestration engine. The workload is structured as a multi-task DAG:
-1. `validate_landing_batch`: Prerequisite verification of ADF raw landing files.
-2. `bronze_ingestion`: Ingests raw files with audit metadata into Bronze Delta.
-3. `silver_transformation`: Conforms Bronze into clean Silver, isolates defects to quarantine, and verifies mathematical reconciliation.
-4. Parallel branches:
-   - `gold_analytics`: Derives high-level KPI aggregate Delta tables.
-   - `dimensional_warehouse`: Executes Kimball star schema (SCD1, SCD2, PIT fact loading) and enterprise quality gates.
-5. `final_quality_gate`: Verifies cross-stage operational metrics.
-6. `publish_run_summary`: Compiles and persists an operational record to `delta/operations/job_run_audit` under `run_if: ALL_DONE` semantics.
-
----
-
-### Q34: What is the difference between transient infrastructure retries and deterministic data quality failure handling in a Lakeflow Job?
-**Answer:**  
-- **Transient Failures (Retryable):** Temporary network timeouts, storage throttling, or concurrency locks. The task is configured with `max_retries: 1-2` and exponential backoff, allowing automatic self-healing.
-- **Deterministic Data Quality Failures (Non-Retryable):** If Silver mathematical reconciliation fails (`bronze != valid + quarantine`) or fact tables violate warehouse quality gates, **retrying with identical source data will produce the exact same failure**. Retrying wastes cloud compute and delays alerts. The pipeline immediately aborts retries, marks the run `FAILED`, classifies it as `DATA_QUALITY`, and triggers operations alerts.
-
----
+## Lakeflow Jobs & Orchestration Architecture (Module 5 Focus)
 
 ### Q35: How do tasks communicate operational metadata in Lakeflow Jobs without violating big data architecture principles?
 **Answer:**  
@@ -359,5 +218,78 @@ Every execution appends exactly one record to the `delta/operations/job_run_audi
 - **Problems with `/mnt/`:** DBFS mount points rely on cluster-wide credentials, cannot enforce Unity Catalog fine-grained access control (row/column filters, ABAC), and introduce hidden external dependencies.
 - **Modern Pattern:** Access storage directly via governed **ABFSS URIs** (`abfss://<container>@<account>.dfs.core.windows.net/...`) authenticated with Azure Databricks Access Connectors and Managed Identities, and manage tables through the **Unity Catalog 3-level namespace** (`<catalog>.<schema>.<table>`).
 
+---
 
+## Production CI/CD, Bundles & Governed SQL Serving (Module 6 Focus)
 
+### Q40: What happens after a developer opens a Pull Request or merges to `main` in this repository?
+**Answer:**  
+GitHub Actions automatically triggers the Continuous Integration (`.github/workflows/ci.yml`) workflow:
+1. Provisions Python 3.11 and Java 17 runners.
+2. Executes Ruff static analysis (`ruff check .`) for linting and style enforcement.
+3. Executes the full Pytest suite (87+ unit and integration tests across Modules 1–6).
+4. Builds the Python release wheel (`python -m build --wheel`).
+5. Installs the wheel into an isolated clean environment and smoke-tests core imports.
+6. Validates Declarative Automation Bundle structure, variable schemas, and serving SQL view contracts.
+7. Quality Gate: Pull requests cannot merge if any lint, test, build, or security check fails.
+
+---
+
+### Q41: How is production deployment authenticated securely without storing long-lived passwords or PATs in GitHub?
+**Answer:**  
+We utilize **GitHub Workload Identity Federation (OIDC)**:
+1. The deployment workflow requests a short-lived OIDC JSON Web Token (JWT) from GitHub (`id-token: write`).
+2. The workflow presents the JWT to Azure Databricks (`DATABRICKS_AUTH_TYPE: "github-oidc"`).
+3. Databricks verifies the token against GitHub's OpenID Connect provider and issues a short-lived federated access token mapped to a dedicated Databricks Service Principal (`DATABRICKS_CLIENT_ID`).
+4. **Security Benefit:** Zero Personal Access Tokens (PATs) or client secrets exist in GitHub Secrets, eliminating credential expiration incidents and token leakage risks.
+
+---
+
+### Q42: What is a Databricks Declarative Automation Bundle and why is it preferred over manual workspace configuration?
+**Answer:**  
+Declarative Automation Bundles (formerly *Databricks Asset Bundles*) represent Databricks-native Infrastructure as Code (IaC):
+- **Declarative Structure:** All Lakeflow Jobs, Serverless SQL Warehouses, Python wheel artifacts, and parameter overrides are version-controlled in `databricks.yml` and resource YAML files.
+- **Multi-Environment Support:** Declarative targets (`dev`, `prod`) isolate developer sandboxes from governed production workspaces.
+- **Auditable & Repeatable:** Deploys identical resource graphs through `databricks bundle deploy`, eliminating UI click-ops and configuration drift.
+
+---
+
+### Q43: Why are CI and CD separated into distinct workflows, and why is production deployment triggered via `workflow_dispatch`?
+**Answer:**  
+- **Separation of Concerns:** CI focuses on code quality, automated testing, and artifact packaging without requiring Databricks credentials. CD focuses on authenticated resource provisioning and deployment.
+- **Safe by Default:** Automated deployment on every push is dangerous for enterprise data platforms where deployments must coordinate with maintenance windows or peer reviews. Triggering CD via `workflow_dispatch` (with optional GitHub Environment production approval protection) gives platform leads explicit release control.
+
+---
+
+### Q44: What is the purpose of the Python wheel artifact in this lakehouse architecture?
+**Answer:**  
+Building a standard Python wheel (`retail_lakehouse_data_platform-0.1.0-py3-none-any.whl`) packages all reusable business logic (`src/medallion`, `src/modeling`, `src/orchestration`, `src/quality`, `src/schemas`) into a versioned, distributable binary. It allows Databricks clusters and jobs to install the library directly, preventing script path coupling and guaranteeing identical dependency resolution across local and cloud environments.
+
+---
+
+### Q45: Why use a Serverless Databricks SQL Warehouse for BI serving instead of querying Lakehouse Delta tables directly from an all-purpose Spark cluster?
+**Answer:**  
+1. **Instant Compute & Serverless Auto-Stop:** Serverless SQL Warehouses start in seconds and aggressively shut down after 10 minutes of inactivity (`auto_stop_mins: 10`), minimizing idle compute costs compared to 10–15 minute all-purpose cluster spin-down times.
+2. **Decoupled Concurrency:** SQL Warehouses handle concurrent BI analyst queries without contending for CPU/memory with heavy batch ETL pipelines.
+3. **ANSI SQL Optimization:** Uses Databricks Photon engine optimized specifically for vectorised SQL aggregations, joins, and BI query workloads.
+
+---
+
+### Q46: Why does the serving layer use Unity Catalog Views over Gold & Warehouse tables rather than copying data into a separate physical reporting table?
+**Answer:**  
+1. **Zero Data Redundancy & Storage Cost:** Views execute queries directly against the underlying optimized Delta tables, eliminating duplicate storage costs.
+2. **Zero Ingestion Latency:** When the warehouse pipeline updates `fact_sales` or Gold KPI tables, views immediately reflect the newest committed data without needing secondary ETL extract jobs.
+3. **Abstraction & Governance:** Views expose clean business column names and join relationships in `<catalog>.serving.*` while shielding physical storage locations and schema structures from end-users.
+
+---
+
+### Q47: In the `sales_detail` serving view, why is the join between `fact_sales` and `dim_customer` performed on `customer_key` rather than a range join on transaction timestamp?
+**Answer:**  
+During the Module 4 warehouse ETL pipeline, the point-in-time surrogate key lookup already evaluated `order_timestamp >= effective_from AND (order_timestamp < effective_to OR effective_to IS NULL)` to stamp `fact_sales.customer_key`. In the serving layer, joining on `customer_key` is a simple integer equi-join that preserves the exact historical customer loyalty tier and address valid at purchase time, without imposing expensive and error-prone range scans on BI queries.
+
+---
+
+### Q48: What platform aspects remain unverified without active Azure cloud credentials?
+**Answer:**  
+While all code, schema contracts, DAG cycle validation, secret scanning, wheel packaging, and local PySpark integration pipelines pass with 100% test coverage locally:
+- **Cloud Pending Elements:** Live Azure Data Factory pipeline execution, live ADLS Gen2 Hierarchical Namespace blob movement, Azure Databricks workspace cluster provisioning, Serverless SQL Warehouse cloud allocation, live Unity Catalog metastore registration, and live GitHub OIDC token exchange with Azure Entra ID.

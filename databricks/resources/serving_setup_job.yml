@@ -1,0 +1,27 @@
+# ==============================================================================
+# Declarative Automation Bundle: Serving Setup Job (Module 6)
+# Product: Azure Databricks Lakeflow Jobs / SQL Task
+# Responsibility: Deploy and refresh governed Unity Catalog serving views
+# ==============================================================================
+
+resources:
+  jobs:
+    retail_lakehouse_serving_setup:
+      name: "Retail Lakehouse Serving Setup"
+      description: "Deploys and refreshes governed Unity Catalog serving views in <catalog>.serving over Gold aggregates and Kimball dimensional warehouse."
+      
+      parameters:
+        - name: catalog_name
+          default: "${var.catalog_name}"
+
+      tasks:
+        - task_key: deploy_serving_views
+          description: "Executes 04_serving_views.sql to create or replace 8 governed analytical views in <catalog>.serving."
+          sql_task:
+            warehouse_id: "${resources.sql_warehouses.retail_lakehouse_serving_warehouse.id}"
+            file:
+              path: "databricks/sql/04_serving_views.sql"
+            parameters:
+              catalog_name: "{{job.parameters.catalog_name}}"
+          timeout_seconds: 600
+          max_retries: 0

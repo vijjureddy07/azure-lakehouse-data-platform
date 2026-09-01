@@ -1,0 +1,67 @@
+# ==============================================================================
+# Declarative Automation Bundle Specification (Module 6)
+# Product: Databricks Declarative Automation Bundles (formerly Databricks Asset Bundles)
+# Workload: Omnichannel Retail Medallion Lakehouse, Kimball Warehouse & SQL Serving
+# ==============================================================================
+
+bundle:
+  name: "retail-lakehouse-data-platform"
+
+include:
+  - "databricks/jobs/*.yml"
+  - "databricks/resources/*.yml"
+
+artifacts:
+  retail_lakehouse_wheel:
+    type: whl
+    path: .
+    build: python -m build --wheel
+
+variables:
+  environment:
+    description: "Deployment environment name (dev, prod)"
+    default: "dev"
+  catalog_name:
+    description: "Unity Catalog target catalog name"
+    default: "retail_lakehouse"
+  storage_account_name:
+    description: "Primary ADLS Gen2 storage account name"
+    default: "stlakehousedev"
+  container_name:
+    description: "Primary ADLS Gen2 lakehouse container name"
+    default: "lakehouse"
+  quarantine_threshold_rate:
+    description: "Threshold rate for Silver quarantine warning alert"
+    default: "0.20"
+  serving_warehouse_name:
+    description: "Name of the Serverless SQL Warehouse for BI serving"
+    default: "retail_lakehouse_serving_wh"
+  deployment_sp_id:
+    description: "Service principal client ID for automated CI/CD deployment execution"
+    default: ""
+
+targets:
+  dev:
+    mode: development
+    default: true
+    workspace:
+      root_path: "/Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}"
+    variables:
+      environment: "dev"
+      catalog_name: "retail_lakehouse"
+      storage_account_name: "stlakehousedev"
+      container_name: "lakehouse"
+      serving_warehouse_name: "retail_lakehouse_serving_wh_dev"
+
+  prod:
+    mode: production
+    workspace:
+      root_path: "/Shared/.bundle/${bundle.name}/${bundle.target}"
+    run_as:
+      service_principal_name: "${var.deployment_sp_id}"
+    variables:
+      environment: "prod"
+      catalog_name: "retail_lakehouse_prod"
+      storage_account_name: "stlakehouseprod"
+      container_name: "lakehouse"
+      serving_warehouse_name: "retail_lakehouse_serving_wh_prod"
