@@ -85,9 +85,20 @@ def ingest_bronze_layer(
     bronze_root: Path | str,
     datasets: list[str] | None = None,
     force_all: bool = False,
+    ingestion_date: str | None = None,
+    adf_run_id: str | None = None,
 ) -> dict[str, int]:
     """
     Discover all pending landing files and ingest them into Bronze Delta tables.
+
+    Args:
+        spark: Active SparkSession.
+        landing_root: Root landing directory or cloud URI.
+        bronze_root: Root Bronze Delta directory.
+        datasets: Optional list of datasets to process (defaults to all 8).
+        force_all: If True, reprocesses files already tracked in _ingestion_audit.
+        ingestion_date: Optional batch date filter for precise orchestration runs.
+        adf_run_id: Optional ADF pipeline RunId filter for batch isolation.
 
     Returns:
         dict[str, int]: Ingested row count per dataset.
@@ -97,6 +108,12 @@ def ingest_bronze_layer(
     audit_table_path = f"{bronze_root_str}/_ingestion_audit"
 
     discovered = discover_landing_files(spark, landing_root, datasets=target_datasets)
+
+    # Optional batch-level isolation filters
+    if ingestion_date:
+        discovered = [f for f in discovered if f.ingestion_date == ingestion_date]
+    if adf_run_id:
+        discovered = [f for f in discovered if f.adf_run_id == adf_run_id]
 
     if force_all:
         pending_files = discovered

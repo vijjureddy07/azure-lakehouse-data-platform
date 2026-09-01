@@ -12,8 +12,9 @@
 | **Module 1: Local PySpark & Quality Framework** | 🟢 **COMPLETE** | 🟢 **PASSED (15 Tests)** | ⏳ **NOT STUDIED / PENDING** |
 | **Module 2: ADF + ADLS Gen2 Cloud Ingestion** | 🟢 **COMPLETE (Deployment-Ready)**<br>*(Cloud Verification Pending)* | 🟢 **PASSED (14 Tests)** | ⏳ **NOT STUDIED / PENDING** |
 | **Module 3: Databricks + Delta Lake + Medallion** | 🟢 **COMPLETE (Local-Verified)**<br>*(Databricks Cloud Pending)* | 🟢 **PASSED (18 Tests)** | ⏳ **NOT STUDIED / PENDING** |
-| **Module 5: Lakeflow Jobs Orchestration + Reliability + Operational Monitoring** | 🟢 **COMPLETE (Local-Verified)**<br>*(Databricks Cloud Pending)* | 🟢 **PASSED (12 Tests)** | ⏳ **NOT STUDIED / PENDING** |
-| **Total Test Suite Pass** | 🟢 **ALL MODULES PASSING** | 🟢 **78 / 78 TESTS PASSED** | ⏳ **NOT STUDIED / PENDING** |
+| **Module 4: Advanced PySpark, Dimensional Modeling & SCD** | 🟢 **COMPLETE (Local-Verified)**<br>*(Databricks Cloud Pending)* | 🟢 **PASSED (19 Tests)** | ⏳ **NOT STUDIED / PENDING** |
+| **Module 5: Lakeflow Jobs Orchestration + Reliability + Operational Monitoring** | 🟢 **COMPLETE (Local-Verified)**<br>*(Databricks Cloud Pending)* | 🟢 **PASSED (17 Tests)** | ⏳ **NOT STUDIED / PENDING** |
+| **Total Test Suite Pass** | 🟢 **ALL MODULES PASSING** | 🟢 **83 / 83 TESTS PASSED** | ⏳ **NOT STUDIED / PENDING** |
 | **Module 6: CI/CD + Serving Architecture** | ⏹️ NOT STARTED | ⏹️ NOT STARTED | ⏳ **NOT STUDIED / PENDING** |
 
 ---

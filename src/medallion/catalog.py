@@ -174,3 +174,43 @@ def register_gold_tables(
         delta_root_uri=delta_root_uri,
         layers=["gold"],
     )
+
+
+def generate_operations_registration_sql(
+    catalog_name: str,
+    delta_root_uri: str,
+) -> list[str]:
+    """
+    Generate idempotent DDL statements registering operations Delta tables in Unity Catalog.
+    """
+    root = delta_root_uri.rstrip("/")
+    loc = f"{root}/operations/job_run_audit"
+    return [
+        f"CREATE CATALOG IF NOT EXISTS {catalog_name};",
+        f"CREATE SCHEMA IF NOT EXISTS {catalog_name}.operations;",
+        f"CREATE TABLE IF NOT EXISTS {catalog_name}.operations.job_run_audit USING DELTA LOCATION '{loc}';",
+    ]
+
+
+def register_operations_tables(
+    spark: SparkSession,
+    catalog_name: str,
+    delta_root_uri: str,
+) -> list[str]:
+    """
+    Register the operational run audit Delta table in Unity Catalog.
+
+    Registers <catalog_name>.operations.job_run_audit only when called,
+    maintaining the layer-isolated registration pattern.
+    """
+    statements = generate_operations_registration_sql(
+        catalog_name=catalog_name,
+        delta_root_uri=delta_root_uri,
+    )
+    for sql_stmt in statements:
+        logger.info("Executing Unity Catalog operations registration: %s", sql_stmt)
+        try:
+            spark.sql(sql_stmt)
+        except Exception as e:
+            logger.warning("Could not execute Unity Catalog statement on local Spark session: %s", e)
+    return statements

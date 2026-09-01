@@ -57,6 +57,7 @@ class RunContext:
     delta_root: Path | str = ""
     quarantine_threshold_rate: float = 0.20  # Max acceptable quarantine rate before alert (20%)
     scale_name: str = "small"
+    allow_partial_batch: bool = False  # Set to True only in specific test scenarios
 
 
 class TaskValueStore:

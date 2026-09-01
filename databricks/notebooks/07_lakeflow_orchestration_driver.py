@@ -8,7 +8,7 @@
 # MAGIC 1. Lakeflow Jobs Parameter retrieval (`dbutils.widgets`).
 # MAGIC 2. Task Values cross-task communication (`dbutils.jobs.taskValues.set/get`).
 # MAGIC 3. Operational audit table queries (`retail_lakehouse.operations.job_run_audit`).
-# MAGIC 4. Failure handling and Databricks Repair-Run verification.
+# MAGIC 4. Repair-run workflow demonstration / documentation.
 
 # COMMAND ----------
 
@@ -70,7 +70,7 @@ except Exception as e:
 # MAGIC     quality_status,
 # MAGIC     failure_task,
 # MAGIC     failure_classification
-# MAGIC FROM delta.`/mnt/lakehouse/delta/operations/job_run_audit`
+# MAGIC FROM retail_lakehouse.operations.job_run_audit
 # MAGIC ORDER BY started_at DESC
 # MAGIC LIMIT 20;
 
@@ -84,6 +84,6 @@ except Exception as e:
 # MAGIC     SUM(silver_quarantine_rows) AS total_quarantine_rows,
 # MAGIC     ROUND(SUM(silver_quarantine_rows) * 100.0 / NULLIF(SUM(silver_valid_rows + silver_quarantine_rows), 0), 2) AS quarantine_rate_pct,
 # MAGIC     MAX(CASE WHEN quarantine_alert_triggered THEN 'ALERT TRIGGERED' ELSE 'NORMAL' END) AS alert_status
-# MAGIC FROM delta.`/mnt/lakehouse/delta/operations/job_run_audit`
+# MAGIC FROM retail_lakehouse.operations.job_run_audit
 # MAGIC GROUP BY ingestion_date
 # MAGIC ORDER BY ingestion_date DESC;

@@ -7,8 +7,10 @@ Statically validates Lakeflow Jobs YAML definitions:
 3. Verifies required job-level parameters.
 4. Enforces modern dynamic value syntax: {{job.id}}, {{job.run_id}}, {{job.parameters.<name>}}, {{tasks.<task>.values.<val>}}.
 5. Detects and rejects deprecated dynamic tokens: {{job_id}}, {{run_id}}, {{start_date}}, {{task_retry_count}}.
-6. Confirms run_if, retries, and timeout policies.
-7. Scans for hardcoded secrets, passwords, tokens, and personal emails.
+6. Confirms condition_task structure and outcome dependencies.
+7. Confirms run_if, retries, and timeout policies.
+8. Ensures zero legacy DBFS /mnt/ mount references.
+9. Scans for hardcoded secrets, passwords, tokens, and personal emails.
 """
 
 from __future__ import annotations
@@ -41,6 +43,17 @@ SECRET_PATTERNS = [
     r"(?i)password\s*:\s*['\"][^'\"]+['\"]",
     r"(?i)client_secret\s*:\s*['\"][^'\"]+['\"]",
     r"[a-zA-Z0-9_.+-]+@(?!example\.com|placeholder\.org)[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+", # Personal emails
+]
+
+REQUIRED_TASK_KEYS = [
+    "validate_landing_batch",
+    "bronze_ingestion",
+    "silver_transformation",
+    "check_quarantine_threshold",
+    "gold_analytics",
+    "dimensional_warehouse",
+    "final_quality_gate",
+    "publish_run_summary",
 ]
 
 
@@ -84,7 +97,7 @@ def find_cycles(tasks: list[dict[str, Any]]) -> list[list[str]]:
     return cycles
 
 
-def validate_lakeflow_job_yaml(yaml_path: Path | str) -> dict[str, Any]:
+def validate_lakeflow_job_yaml(yaml_path: Path | str, repo_root: Path | str | None = None) -> dict[str, Any]:
     """
     Parse and validate a Lakeflow Jobs YAML definition.
 
@@ -108,7 +121,11 @@ def validate_lakeflow_job_yaml(yaml_path: Path | str) -> dict[str, Any]:
                 f"Security Violation: Potential secret/credential matched pattern '{pattern}': {match.group(0)}"
             )
 
-    # 2. Deprecated Dynamic Variable Syntax Detection
+    # 2. Legacy Mount Path Check
+    if "/mnt/" in content:
+        raise LakeflowJobValidationError("Architecture Violation: Found legacy '/mnt/' DBFS mount path in Lakeflow YAML.")
+
+    # 3. Deprecated Dynamic Variable Syntax Detection
     for dep_pat in DEPRECATED_DYNAMIC_PATTERNS:
         match = re.search(dep_pat, content)
         if match:
@@ -117,7 +134,7 @@ def validate_lakeflow_job_yaml(yaml_path: Path | str) -> dict[str, Any]:
                 f"Use modern Lakeflow syntax e.g. '{{{{job.id}}}}' or '{{{{job.run_id}}}}'."
             )
 
-    # 3. YAML Parsing
+    # 4. YAML Parsing
     try:
         data = yaml.safe_load(content)
     except Exception as e:
@@ -135,7 +152,7 @@ def validate_lakeflow_job_yaml(yaml_path: Path | str) -> dict[str, Any]:
     job_key = next(iter(jobs))
     job_def = jobs[job_key]
 
-    # 4. Validate Parameters
+    # 5. Validate Parameters
     params = job_def.get("parameters", [])
     param_names = {p.get("name") for p in params if isinstance(p, dict)}
     for req_param in REQUIRED_JOB_PARAMETERS:
@@ -144,14 +161,16 @@ def validate_lakeflow_job_yaml(yaml_path: Path | str) -> dict[str, Any]:
                 f"Missing required job parameter: '{req_param}'. Found parameters: {sorted(list(param_names))}"
             )
 
-    # 5. Validate Tasks and Graph Structure
+    # 6. Validate Tasks and Graph Structure
     tasks = job_def.get("tasks", [])
     if not tasks:
         raise LakeflowJobValidationError("Job contains 0 tasks.")
 
-    task_keys = [t.get("task_key") for t in tasks if "task_key" in t]
-    if len(task_keys) != len(set(task_keys)):
-        duplicates = [k for k in task_keys if task_keys.count(k) > 1]
+    task_map = {t.get("task_key"): t for t in tasks if "task_key" in t}
+    task_keys = list(task_map.keys())
+
+    if len(task_keys) != len(tasks):
+        duplicates = [t.get("task_key") for t in tasks if task_keys.count(t.get("task_key")) > 1]
         raise LakeflowJobValidationError(f"Duplicate task keys found: {set(duplicates)}")
 
     # 6. Cycle Detection
@@ -159,7 +178,32 @@ def validate_lakeflow_job_yaml(yaml_path: Path | str) -> dict[str, Any]:
     if cycles:
         raise LakeflowJobValidationError(f"Circular dependency detected in DAG: {cycles[0]}")
 
-    # 7. Validate Modern Dynamic Value References
+    # 7. Verify required tasks presence
+    for req_task in REQUIRED_TASK_KEYS:
+        if req_task not in task_map:
+            raise LakeflowJobValidationError(f"Missing required task: '{req_task}' in Lakeflow DAG.")
+
+    # 8. Validate Condition Tasks and Outcome Dependencies
+    for t in tasks:
+        if "condition_task" in t:
+            cond = t["condition_task"]
+            if not isinstance(cond, dict) or "op" not in cond or "left" not in cond or "right" not in cond:
+                raise LakeflowJobValidationError(f"Invalid condition_task structure in task '{t.get('task_key')}'")
+
+        for dep in t.get("depends_on", []):
+            if "outcome" in dep:
+                outcome_val = str(dep["outcome"]).lower()
+                if outcome_val not in ("true", "false"):
+                    raise LakeflowJobValidationError(
+                        f"Invalid dependency outcome '{dep['outcome']}' in task '{t.get('task_key')}'. Must be 'true' or 'false'."
+                    )
+
+    # 9. Verify publish_run_summary run_if policy
+    publish_task = task_map.get("publish_run_summary")
+    if publish_task and publish_task.get("run_if") != "ALL_DONE":
+        raise LakeflowJobValidationError("Task 'publish_run_summary' must specify 'run_if: ALL_DONE'.")
+
+    # 10. Validate Modern Dynamic Value References
     modern_pattern = re.compile(r"\{\{\s*([a-zA-Z0-9_.]+)\s*\}\}")
     valid_prefixes = ("job.", "tasks.", "bundle.")
     for match in modern_pattern.finditer(content):

@@ -41,6 +41,8 @@ def execute_bronze_task(
         spark=spark,
         landing_root=landing_root,
         bronze_root=bronze_root,
+        ingestion_date=context.ingestion_date,
+        adf_run_id=context.adf_run_id,
     )
 
     total_rows = sum(bronze_results.values())

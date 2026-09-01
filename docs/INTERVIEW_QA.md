@@ -343,5 +343,21 @@ Every execution appends exactly one record to the `delta/operations/job_run_audi
 - **`run_if: ALL_DONE` Semantics:** Ensures the summary task executes whether upstream stages succeeded or failed.
 - **Schema & Nullability:** On successful runs, it captures throughput (Bronze rows, Silver valid/quarantine, fact sales count, duration). On failed early runs, downstream metric fields are stored as `NULL`, while error details (`failure_task`, `failure_classification`, `error_message`) are populated for RCA.
 
+---
+
+### Q38: How does conditional branching work in Lakeflow Jobs, and what is the architectural difference between a Quarantine Warning and a Critical Data Quality Failure?
+**Answer:**  
+- **Lakeflow Condition Task:** Configured using `condition_task` with an operator (e.g. `op: EQUAL_TO`, `left: "{{tasks.silver_transformation.values.quarantine_alert_triggered}}"`, `right: "true"`). Downstream tasks declare a dependency with `outcome: "true"` (e.g. `quality_attention` branch).
+- **Quarantine Warning vs. Critical Quality Failure:**
+  - *Quarantine Warning:* When the quarantine rate exceeds a warning threshold (e.g. >20%), the bad records are successfully isolated, and the conformed valid data still mathematically balances with Bronze. The pipeline executes the `quality_attention` task to alert on-call engineers, but downstream Gold & Warehouse workloads continue normally.
+  - *Critical Quality Failure:* If mathematical reconciliation fails (`bronze != valid + quarantine`) or referential integrity in fact tables is violated, the pipeline hard-fails immediately and aborts downstream processing.
+
+---
+
+### Q39: Why are legacy `/mnt/` DBFS mount paths deprecated in modern Azure Databricks architectures, and how should storage be accessed?
+**Answer:**  
+- **Problems with `/mnt/`:** DBFS mount points rely on cluster-wide credentials, cannot enforce Unity Catalog fine-grained access control (row/column filters, ABAC), and introduce hidden external dependencies.
+- **Modern Pattern:** Access storage directly via governed **ABFSS URIs** (`abfss://<container>@<account>.dfs.core.windows.net/...`) authenticated with Azure Databricks Access Connectors and Managed Identities, and manage tables through the **Unity Catalog 3-level namespace** (`<catalog>.<schema>.<table>`).
+
 
 

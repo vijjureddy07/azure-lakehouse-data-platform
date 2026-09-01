@@ -42,6 +42,18 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+ALL_DAG_TASKS = [
+    "validate_landing_batch",
+    "bronze_ingestion",
+    "silver_transformation",
+    "check_quarantine_threshold",
+    "quality_attention",
+    "gold_analytics",
+    "dimensional_warehouse",
+    "final_quality_gate",
+    "publish_run_summary",
+]
+
 
 class LakeflowLocalOrchestrator:
     """
@@ -96,6 +108,16 @@ class LakeflowLocalOrchestrator:
             logger.error("<<< FAILED TASK: %s [%s]: %s", task_name, classification.value, str(exc))
             return False
 
+    def _mark_skipped(self, task_name: str, reason: str = "Upstream task failed") -> None:
+        """Mark an unexecuted downstream task as SKIPPED due to dependency failure."""
+        if task_name not in self.task_results:
+            self.task_results[task_name] = TaskResult(
+                task_name=task_name,
+                state=TaskState.SKIPPED,
+                failure_classification=FailureClassification.DEPENDENCY,
+                error_message=reason,
+            )
+
     def run(self, spark: SparkSession | None = None) -> JobRunAudit:
         """
         Execute the full Lakeflow Jobs DAG.
@@ -104,7 +126,8 @@ class LakeflowLocalOrchestrator:
             validate_landing_batch (retries: 2)
             ➔ bronze_ingestion (retries: 1)
             ➔ silver_transformation (retries: 0 for data quality)
-            ➔ [gold_analytics, dimensional_warehouse] in parallel/sequence
+            ➔ [check_quarantine_threshold (condition) -> quality_attention (branch)]
+            ➔ [gold_analytics, dimensional_warehouse] in parallel (sequential in local sim)
             ➔ final_quality_gate
             ➔ publish_run_summary (run_if: ALL_DONE)
         """
@@ -147,31 +170,55 @@ class LakeflowLocalOrchestrator:
             if not t3_ok:
                 raise RuntimeError(f"Task 'silver_transformation' failed: {self.task_results['silver_transformation'].error_message}")
 
-            # Task 4A: Gold Analytics
-            t4a_ok = self._execute_task_step(
+            # Task 4: Condition Task - Check Quarantine Threshold
+            quarantine_alert = self.task_values.get("silver_transformation", "quarantine_alert_triggered") or False
+            self.task_results["check_quarantine_threshold"] = TaskResult(
+                task_name="check_quarantine_threshold",
+                state=TaskState.SUCCESS,
+                task_values={"outcome": str(quarantine_alert).lower()},
+            )
+
+            # Task 4A: Quality Attention Branch (Executes only if condition == true)
+            if quarantine_alert:
+                logger.warning("Quarantine rate exceeded threshold! Executing quality_attention task.")
+                self.task_values.set("quality_attention", "quality_attention_required", True)
+                self.task_results["quality_attention"] = TaskResult(
+                    task_name="quality_attention",
+                    state=TaskState.SUCCESS,
+                    task_values={"quality_attention_required": True},
+                )
+            else:
+                self.task_results["quality_attention"] = TaskResult(
+                    task_name="quality_attention",
+                    state=TaskState.SKIPPED,
+                    error_message="Condition 'check_quarantine_threshold' evaluated to false",
+                )
+
+            # Task 5A: Gold Analytics
+            t5a_ok = self._execute_task_step(
                 task_name="gold_analytics",
                 task_func=lambda: execute_gold_task(active_spark, self.context, self.task_values),
                 retry_policy=RetryPolicy(max_retries=1),
             )
-            if not t4a_ok:
+            if not t5a_ok:
                 raise RuntimeError(f"Task 'gold_analytics' failed: {self.task_results['gold_analytics'].error_message}")
 
-            # Task 4B: Dimensional Warehouse (SCD1, SCD2, Facts, EDQ)
-            t4b_ok = self._execute_task_step(
+            # Task 5B: Dimensional Warehouse (SCD1, SCD2, Facts, EDQ)
+            t5b_ok = self._execute_task_step(
                 task_name="dimensional_warehouse",
                 task_func=lambda: execute_warehouse_task(active_spark, self.context, self.task_values),
                 retry_policy=RetryPolicy(max_retries=1, retryable_classifications={FailureClassification.TRANSIENT}),
             )
-            if not t4b_ok:
+            if not t5b_ok:
                 raise RuntimeError(f"Task 'dimensional_warehouse' failed: {self.task_results['dimensional_warehouse'].error_message}")
 
-            # Task 5: Final Operational Quality Gate
-            t5_ok = self._execute_task_step(
+            # Task 6: Final Operational Quality Gate
+            t6_ok = self._execute_task_step(
                 task_name="final_quality_gate",
                 task_func=lambda: execute_final_quality_gate_task(active_spark, self.context, self.task_values),
                 retry_policy=RetryPolicy(max_retries=0),
             )
-            if not t5_ok:
+            if not t6_ok:
                 raise RuntimeError(f"Task 'final_quality_gate' failed: {self.task_results['final_quality_gate'].error_message}")
 
         except Exception as exc:
@@ -190,8 +237,13 @@ class LakeflowLocalOrchestrator:
 
             logger.error("Job execution failed at task '%s' [%s]: %s", failure_task, failure_classification, error_message)
 
+            # Mark all remaining unexecuted tasks as SKIPPED due to DEPENDENCY
+            for tname in ALL_DAG_TASKS:
+                if tname != "publish_run_summary":
+                    self._mark_skipped(tname, reason=f"Upstream task '{failure_task}' failed")
+
         finally:
-            # Task 6: Publish Run Summary (run_if: ALL_DONE)
+            # Task 7: Publish Run Summary (run_if: ALL_DONE)
             audit_record = execute_publish_run_summary_task(
                 spark=active_spark,
                 context=self.context,
