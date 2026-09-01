@@ -54,14 +54,14 @@ graph TD
 
 | Task Key | Type | Depends On | `run_if` | Native Retries | In-Process Retry | Timeout | Task Values Published |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| `validate_landing_batch` | `notebook_task` | None | `ALL_SUCCESS` | 0 | 1 (Transient only) | 600s | `landing_ready`, `discovered_dataset_count`, `missing_dataset_count`, `ingestion_date`, `adf_run_id`, `landing_root` |
-| `bronze_ingestion` | `notebook_task` | `validate_landing_batch` | `ALL_SUCCESS` | 1 | 1 (Transient only) | 1200s | `bronze_rows_ingested`, `datasets_processed` |
-| `silver_transformation` | `notebook_task` | `bronze_ingestion` | `ALL_SUCCESS` | 0 | 1 (Transient only) | 1800s | `silver_valid_rows`, `silver_quarantine_rows`, `reconciliation_passed`, `quarantine_rate`, `quarantine_alert_triggered` |
+| `validate_landing_batch` | `notebook_task` | None | `ALL_SUCCESS` | 0 | 1 (Transient only) | 600s | `terminal_state`, `landing_ready`, `discovered_dataset_count`, `missing_dataset_count`, `ingestion_date`, `adf_run_id`, `landing_root` |
+| `bronze_ingestion` | `notebook_task` | `validate_landing_batch` | `ALL_SUCCESS` | 1 | 1 (Transient only) | 1200s | `terminal_state`, `bronze_rows_ingested`, `datasets_processed` |
+| `silver_transformation` | `notebook_task` | `bronze_ingestion` | `ALL_SUCCESS` | 0 | 1 (Transient only) | 1800s | `terminal_state`, `silver_valid_rows`, `silver_quarantine_rows`, `reconciliation_passed`, `quarantine_rate`, `quarantine_alert_triggered` |
 | `check_quarantine_threshold` | `condition_task` | `silver_transformation` | `ALL_SUCCESS` | 0 | 0 | - | Evaluates: `quarantine_alert_triggered == true` |
 | `quality_attention` | `notebook_task` | `check_quarantine_threshold` (`outcome: true`) | `ALL_SUCCESS` | 0 | 0 | 300s | `quality_attention_required`, `quarantine_alert_logged` |
-| `gold_analytics` | `notebook_task` | `silver_transformation` | `ALL_SUCCESS` | 1 | 1 (Transient only) | 1200s | `gold_tables_generated` |
-| `dimensional_warehouse` | `notebook_task` | `silver_transformation` | `ALL_SUCCESS` | 0 | 1 (Transient only) | 2400s | `fact_sales_rows`, `fact_returns_rows`, `warehouse_quality_passed` |
-| `final_quality_gate` | `notebook_task` | `gold_analytics`, `dimensional_warehouse` | `ALL_SUCCESS` | 0 | 0 | 600s | `final_quality_gate_passed`, `overall_quality_status` |
+| `gold_analytics` | `notebook_task` | `silver_transformation` | `ALL_SUCCESS` | 1 | 1 (Transient only) | 1200s | `terminal_state`, `gold_tables_generated` |
+| `dimensional_warehouse` | `notebook_task` | `silver_transformation` | `ALL_SUCCESS` | 0 | 1 (Transient only) | 2400s | `terminal_state`, `fact_sales_rows`, `fact_returns_rows`, `warehouse_quality_passed` |
+| `final_quality_gate` | `notebook_task` | `gold_analytics`, `dimensional_warehouse` | `ALL_SUCCESS` | 0 | 0 | 600s | `terminal_state`, `final_quality_gate_passed`, `overall_quality_status` |
 | `publish_run_summary` | `notebook_task` | `final_quality_gate` | `ALL_DONE` | 1 | 0 | 300s | None (Persists `JobRunAudit` to Delta & registers UC) |
 
 ---
@@ -79,12 +79,13 @@ To maintain a clean boundary between **Orchestration Behavior (Module 5)** and *
 - `final_quality_gate.py`
 - `publish_run_summary.py`
 
-Each task wrapper notebook:
-1. Retrieves task parameters from `dbutils.widgets`.
+Each primary task wrapper notebook:
+1. Retrieves job-level parameters pushed automatically into `dbutils.widgets` (`environment`, `ingestion_date`, `adf_run_id`, `storage_account_name`, `container_name`, `catalog_name`).
 2. Constructs a strongly-typed `RunContext`.
 3. Calls the reusable Python implementation from `src/orchestration/tasks/*`.
 4. Executes with classified in-process retry logic (`FailureClassification.TRANSIENT`).
-5. Publishes runtime telemetry or failure metadata (`failure_classification`, `failure_message`) to Lakeflow Jobs via `dbutils.jobs.taskValues.set()`.
+5. On success, publishes `terminal_state = "SUCCESS"` and throughput metrics via `dbutils.jobs.taskValues.set()`.
+6. On caught exception, publishes `terminal_state = "FAILED"`, `failure_classification`, and `failure_message` before re-raising.
 
 ---
 
@@ -151,10 +152,13 @@ graph TD
 ## 7. Cloud Failure Auditing & Run Summary Resolution
 
 Under `run_if: ALL_DONE` semantics, the `publish_run_summary` task executes on both success and failure runs:
-- **Real Start Time:** Receives `job_start_time = {{job.start_time.iso_datetime}}` to measure full pipeline wall-clock duration accurately.
-- **Result States & Error Codes:** Receives upstream task result states (`{{tasks.<task>.result_state}}`) and error codes (`{{tasks.<task>.error_code}}`).
-- **Root Failure Resolution:** Inspects DAG tasks in sequence, identifies the earliest failing task, reads published `failure_classification` and `failure_message` task values, and populates RCA fields in `JobRunAudit`. If no task-published classification exists, falls back conservatively (e.g. `timedout` ➔ `TRANSIENT`, generic failure ➔ `UNKNOWN`).
-- **Operational Health Thresholds:** Job health duration threshold (`RUN_DURATION_SECONDS > 3600`) is version-controlled. Notification destinations are intentionally not embedded in executable YAML; environment-specific notifications are deferred to deployment/environment configuration in Module 6.
+- **Bundle Job Parameter Pushdown:** Job metadata (`job_id = {{job.id}}`, `job_run_id = {{job.run_id}}`, `job_start_time = {{job.start_time.iso_datetime}}`) and environment parameters are pushed down directly to notebook widgets at the job level.
+- **Cross-Task Telemetry via Task Values:** Rather than relying on invalid notebook `base_parameters`, upstream tasks communicate runtime metrics, `terminal_state`, `failure_classification`, and `failure_message` via Databricks native `dbutils.jobs.taskValues`.
+- **Root Failure Resolution (`resolve_failed_task_from_task_values`):**
+  - **Explicit Failure:** If a primary task published `terminal_state = "FAILED"`, its published classification and error message are recorded as the root cause.
+  - **Infrastructure Termination:** If a task terminated abruptly (eviction, cancellation, node loss) before Python could catch the exception, the first primary task missing a `terminal_state = "SUCCESS"` marker is conservatively recorded as the failure candidate with classification `UNKNOWN`.
+  - **All-Success:** If all 6 primary tasks (`validate_landing_batch`, `bronze_ingestion`, `silver_transformation`, `gold_analytics`, `dimensional_warehouse`, `final_quality_gate`) published `terminal_state = "SUCCESS"`, `JobRunAudit` records `final_status = "SUCCESS"`.
+- **Operational Health Thresholds:** Job health duration threshold (`RUN_DURATION_SECONDS > 3600`) is version-controlled.
 
 ---
 
@@ -180,12 +184,13 @@ LOCATION 'abfss://lakehouse@stlakehousedev.dfs.core.windows.net/delta/operations
 In Databricks Lakeflow Jobs, when a pipeline fails at a downstream task (e.g. `dimensional_warehouse`), operators can trigger a **Repair Run**:
 1. Completed upstream tasks (`validate_landing_batch`, `bronze_ingestion`, `silver_transformation`) are **skipped** without re-executing.
 2. The repaired task re-runs.
-3. Due to Module 3 and Module 4 deterministic surrogate key generation and Delta MERGE idempotency, the idempotent Delta design is intended to make repair runs safe for unchanged inputs. Real production concurrency and cloud behavior remain subject to cloud verification.
+3. Due to Module 3 and Module 4 deterministic surrogate key generation and Delta MERGE idempotency, the idempotent Delta design makes repair runs safe for unchanged inputs.
 
 ---
 
 ## 10. Verification & Cloud Status
 
 - **Ruff Static Analysis:** 0 errors (`All checks passed!`)
+- **Pytest Suite:** 104 / 104 tests passing repository-wide.
 - **Cloud Verification Status:** `LAKEFLOW JOB DEFINITION: DEPLOYMENT-READY`, `CLOUD EXECUTION: PENDING`
 - **Learning Status:** `NOT STUDIED / PENDING`

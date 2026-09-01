@@ -28,6 +28,12 @@ resources:
           default: "${var.catalog_name}"
         - name: quarantine_threshold_rate
           default: "${var.quarantine_threshold_rate}"
+        - name: job_id
+          default: "{{job.id}}"
+        - name: job_run_id
+          default: "{{job.run_id}}"
+        - name: job_start_time
+          default: "{{job.start_time.iso_datetime}}"
 
       # ------------------------------------------------------------------------
       # Health Duration Threshold (Alert if Run Exceeds Baseline)

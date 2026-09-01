@@ -239,7 +239,7 @@ JOIN warehouse.dim_customer c ON s.customer_key = c.customer_key
 ## 7. Verification Status & Cloud Honesty
 
 - **Local Packaging & Build:** 🟢 `VERIFIED` (`python -m build --wheel` builds clean wheel and smoke tests pass).
-- **Static Resource Contract Tests:** 🟢 `VERIFIED` (102/102 unit & integration tests pass across Modules 1–6).
+- **Static Resource Contract Tests:** 🟢 `VERIFIED` (104/104 unit & integration tests pass across Modules 1–6).
 - **GitHub Actions CI Workflow:** 🟢 `IMPLEMENTED / LOCAL TESTED` (Runs clean locally; remote CI execution pending repository push).
 - **Authenticated Databricks Bundle Validation:** ⏳ `PENDING` (Requires live Databricks CLI authentication and workspace connection).
 - **Databricks Cloud Deployment:** ⏳ `PENDING`

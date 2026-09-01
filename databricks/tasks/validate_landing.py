@@ -13,7 +13,7 @@ from src.utils.spark import get_spark_session
 
 # COMMAND ----------
 
-# Retrieve Parameters from Lakeflow Widgets
+# Retrieve Parameters from Lakeflow Widgets (Injected via Job-Level Parameters)
 dbutils.widgets.text("environment", "dev", "Environment")
 dbutils.widgets.text("ingestion_date", "", "Ingestion Date")
 dbutils.widgets.text("adf_run_id", "", "ADF Run ID")
@@ -60,17 +60,23 @@ try:
         policy,
     )
 
-    # Publish Lakeflow Task Values
+    # Publish Lakeflow Task Values and Terminal Success Marker
     for k, v in task_values.get_all("validate_landing_batch").items():
         try:
             dbutils.jobs.taskValues.set(key=k, value=v)
         except Exception:
             pass
 
+    try:
+        dbutils.jobs.taskValues.set(key="terminal_state", value="SUCCESS")
+    except Exception:
+        pass
+
     print(f"Validate Landing Batch Complete: {result}")
 except Exception as exc:
     classification = classify_failure(exc)
     try:
+        dbutils.jobs.taskValues.set(key="terminal_state", value="FAILED")
         dbutils.jobs.taskValues.set(key="failure_classification", value=classification.value)
         dbutils.jobs.taskValues.set(key="failure_message", value=str(exc)[:500])
     except Exception:

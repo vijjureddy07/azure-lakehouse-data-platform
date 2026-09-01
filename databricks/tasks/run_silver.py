@@ -64,10 +64,16 @@ try:
         except Exception:
             pass
 
+    try:
+        dbutils.jobs.taskValues.set(key="terminal_state", value="SUCCESS")
+    except Exception:
+        pass
+
     print(f"Silver Conformance Complete: {result}")
 except Exception as exc:
     classification = classify_failure(exc)
     try:
+        dbutils.jobs.taskValues.set(key="terminal_state", value="FAILED")
         dbutils.jobs.taskValues.set(key="failure_classification", value=classification.value)
         dbutils.jobs.taskValues.set(key="failure_message", value=str(exc)[:500])
     except Exception:

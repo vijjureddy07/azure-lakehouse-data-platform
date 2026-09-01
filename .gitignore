@@ -81,6 +81,7 @@ output/
 !output/.gitkeep
 spark-warehouse/
 .pytest_cache/
+.ruff_cache/
 .coverage
 htmlcov/
 *.log

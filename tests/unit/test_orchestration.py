@@ -46,6 +46,7 @@ from src.orchestration.reliability import (
 )
 from src.orchestration.tasks.publish_run_summary import (
     resolve_failed_task_from_states,
+    resolve_failed_task_from_task_values,
 )
 from src.orchestration.tasks.validate_landing import (
     LandingBatchIncompleteError,
@@ -88,6 +89,10 @@ def test_lakeflow_job_yaml_structure_and_parameters():
         "storage_account_name",
         "container_name",
         "catalog_name",
+        "quarantine_threshold_rate",
+        "job_id",
+        "job_run_id",
+        "job_start_time",
     }
     assert expected_params.issubset(parsed["parameters"])
 
@@ -392,6 +397,84 @@ def test_resolve_failed_task_from_states_and_values():
     assert f_task_d == "bronze_ingestion"
     assert f_class_d == "TRANSIENT"
     assert "Storage timeout" in f_msg_d
+
+
+def test_resolve_failed_task_from_task_values_comprehensive():
+    """Test determining root failed task from published task values without relying on deprecated task base_parameters."""
+    primary_tasks = [
+        "validate_landing_batch",
+        "bronze_ingestion",
+        "silver_transformation",
+        "gold_analytics",
+        "dimensional_warehouse",
+        "final_quality_gate",
+    ]
+
+    # Scenario 1: All Primary Tasks SUCCESS -> No failure
+    store_ok = TaskValueStore()
+    for t in primary_tasks:
+        store_ok.set(t, "terminal_state", "SUCCESS")
+    f_task, f_class, f_msg = resolve_failed_task_from_task_values(primary_tasks, store_ok)
+    assert f_task is None
+    assert f_class is None
+    assert f_msg is None
+
+    # Scenario 2: Explicit Silver DATA_QUALITY failure
+    store_silver = TaskValueStore()
+    store_silver.set("validate_landing_batch", "terminal_state", "SUCCESS")
+    store_silver.set("bronze_ingestion", "terminal_state", "SUCCESS")
+    store_silver.set("silver_transformation", "terminal_state", "FAILED")
+    store_silver.set("silver_transformation", "failure_classification", "DATA_QUALITY")
+    store_silver.set("silver_transformation", "failure_message", "ReconciliationError: Discrepancy detected")
+    f_task_s, f_class_s, f_msg_s = resolve_failed_task_from_task_values(primary_tasks, store_silver)
+    assert f_task_s == "silver_transformation"
+    assert f_class_s == "DATA_QUALITY"
+    assert "ReconciliationError" in f_msg_s
+
+    # Scenario 3: Explicit Warehouse DATA_QUALITY failure
+    store_wh = TaskValueStore()
+    for t in ["validate_landing_batch", "bronze_ingestion", "silver_transformation", "gold_analytics"]:
+        store_wh.set(t, "terminal_state", "SUCCESS")
+    store_wh.set("dimensional_warehouse", "terminal_state", "FAILED")
+    store_wh.set("dimensional_warehouse", "failure_classification", "DATA_QUALITY")
+    store_wh.set("dimensional_warehouse", "failure_message", "WarehouseQualityGateError: primary key broken")
+    f_task_w, f_class_w, f_msg_w = resolve_failed_task_from_task_values(primary_tasks, store_wh)
+    assert f_task_w == "dimensional_warehouse"
+    assert f_class_w == "DATA_QUALITY"
+    assert "WarehouseQualityGateError" in f_msg_w
+
+    # Scenario 4: Infrastructure failure - Warehouse missing terminal marker after upstream successes
+    store_infra = TaskValueStore()
+    for t in ["validate_landing_batch", "bronze_ingestion", "silver_transformation", "gold_analytics"]:
+        store_infra.set(t, "terminal_state", "SUCCESS")
+    # dimensional_warehouse published nothing (evicted/timedout)
+    f_task_i, f_class_i, f_msg_i = resolve_failed_task_from_task_values(primary_tasks, store_infra)
+    assert f_task_i == "dimensional_warehouse"
+    assert f_class_i == "UNKNOWN"
+    assert "did not publish terminal completion metadata" in f_msg_i
+
+    # Scenario 5: Parallel Branch - Gold FAILED while Warehouse SUCCESS
+    store_gold = TaskValueStore()
+    for t in ["validate_landing_batch", "bronze_ingestion", "silver_transformation"]:
+        store_gold.set(t, "terminal_state", "SUCCESS")
+    store_gold.set("gold_analytics", "terminal_state", "FAILED")
+    store_gold.set("gold_analytics", "failure_classification", "DATA_QUALITY")
+    store_gold.set("gold_analytics", "failure_message", "Gold calculation error")
+    store_gold.set("dimensional_warehouse", "terminal_state", "SUCCESS")
+    f_task_g, f_class_g, _ = resolve_failed_task_from_task_values(primary_tasks, store_gold)
+    assert f_task_g == "gold_analytics"
+    assert f_class_g == "DATA_QUALITY"
+
+    # Scenario 6: Parallel Branch - Gold SUCCESS while Warehouse FAILED
+    store_gold_ok_wh_fail = TaskValueStore()
+    for t in ["validate_landing_batch", "bronze_ingestion", "silver_transformation", "gold_analytics"]:
+        store_gold_ok_wh_fail.set(t, "terminal_state", "SUCCESS")
+    store_gold_ok_wh_fail.set("dimensional_warehouse", "terminal_state", "FAILED")
+    store_gold_ok_wh_fail.set("dimensional_warehouse", "failure_classification", "TRANSIENT")
+    store_gold_ok_wh_fail.set("dimensional_warehouse", "failure_message", "IOError: connection reset")
+    f_task_gw, f_class_gw, _ = resolve_failed_task_from_task_values(primary_tasks, store_gold_ok_wh_fail)
+    assert f_task_gw == "dimensional_warehouse"
+    assert f_class_gw == "TRANSIENT"
 
 
 def test_landing_batch_validation_complete_and_incomplete(spark, tmp_path):

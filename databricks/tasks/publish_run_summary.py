@@ -10,14 +10,15 @@ from datetime import datetime, timezone
 
 from src.orchestration.models import RunContext, TaskValueStore
 from src.orchestration.tasks.publish_run_summary import (
+    PRIMARY_DAG_TASK_ORDER,
     execute_publish_run_summary_task,
-    resolve_failed_task_from_states,
+    resolve_failed_task_from_task_values,
 )
 from src.utils.spark import get_spark_session
 
 # COMMAND ----------
 
-# Lakeflow widgets parameters
+# Lakeflow widgets parameters (Injected via Job-Level Parameter Pushdown)
 dbutils.widgets.text("environment", "dev", "Environment")
 dbutils.widgets.text("ingestion_date", "", "Ingestion Date")
 dbutils.widgets.text("adf_run_id", "", "ADF Run ID")
@@ -28,20 +29,6 @@ dbutils.widgets.text("delta_root", "", "Delta Root URI")
 dbutils.widgets.text("job_id", "", "Job ID")
 dbutils.widgets.text("job_run_id", "", "Job Run ID")
 dbutils.widgets.text("job_start_time", "", "Job Start Time (ISO)")
-
-# Upstream task result states
-dbutils.widgets.text("validate_landing_state", "", "Validate Landing State")
-dbutils.widgets.text("validate_landing_error", "", "Validate Landing Error")
-dbutils.widgets.text("bronze_state", "", "Bronze State")
-dbutils.widgets.text("bronze_error", "", "Bronze Error")
-dbutils.widgets.text("silver_state", "", "Silver State")
-dbutils.widgets.text("silver_error", "", "Silver Error")
-dbutils.widgets.text("gold_state", "", "Gold State")
-dbutils.widgets.text("gold_error", "", "Gold Error")
-dbutils.widgets.text("warehouse_state", "", "Warehouse State")
-dbutils.widgets.text("warehouse_error", "", "Warehouse Error")
-dbutils.widgets.text("final_quality_state", "", "Final Quality State")
-dbutils.widgets.text("final_quality_error", "", "Final Quality Error")
 
 env = dbutils.widgets.get("environment")
 ingestion_date = dbutils.widgets.get("ingestion_date")
@@ -61,7 +48,6 @@ delta_root = delta_root_param if delta_root_param else f"{storage_base}/delta"
 start_time = None
 if job_start_str:
     try:
-        # Handle ISO strings like 2026-09-01T15:30:00Z or +00:00
         clean_iso = job_start_str.replace("Z", "+00:00")
         start_time = datetime.fromisoformat(clean_iso)
     except Exception:
@@ -87,52 +73,33 @@ task_values = TaskValueStore()
 
 # COMMAND ----------
 
-# Fetch task values set by upstream tasks in the active Lakeflow Job run if available
-task_keys = [
-    "validate_landing_batch",
-    "bronze_ingestion",
-    "silver_transformation",
-    "gold_analytics",
-    "dimensional_warehouse",
-    "final_quality_gate",
-]
-
-for t_key in task_keys:
+# Fetch task values set by upstream primary tasks in the active Lakeflow Job run
+for t_key in PRIMARY_DAG_TASK_ORDER:
     try:
-        for k in ("landing_ready", "discovered_dataset_count", "bronze_rows_ingested",
-                  "silver_valid_rows", "silver_quarantine_rows", "quarantine_rate",
-                  "quarantine_alert_triggered", "gold_tables_generated", "fact_sales_rows",
-                  "overall_quality_status", "failure_classification", "failure_message"):
+        for k in (
+            "terminal_state",
+            "failure_classification",
+            "failure_message",
+            "landing_ready",
+            "discovered_dataset_count",
+            "bronze_rows_ingested",
+            "silver_valid_rows",
+            "silver_quarantine_rows",
+            "quarantine_rate",
+            "quarantine_alert_triggered",
+            "gold_tables_generated",
+            "fact_sales_rows",
+            "overall_quality_status",
+        ):
             val = dbutils.jobs.taskValues.get(taskKey=t_key, key=k, default=None)
             if val is not None:
                 task_values.set(t_key, k, val)
     except Exception:
         pass
 
-# Collect task states and error codes
-task_states = {
-    "validate_landing_batch": dbutils.widgets.get("validate_landing_state"),
-    "bronze_ingestion": dbutils.widgets.get("bronze_state"),
-    "silver_transformation": dbutils.widgets.get("silver_state"),
-    "gold_analytics": dbutils.widgets.get("gold_state"),
-    "dimensional_warehouse": dbutils.widgets.get("warehouse_state"),
-    "final_quality_gate": dbutils.widgets.get("final_quality_state"),
-}
-
-task_errors = {
-    "validate_landing_batch": dbutils.widgets.get("validate_landing_error"),
-    "bronze_ingestion": dbutils.widgets.get("bronze_error"),
-    "silver_transformation": dbutils.widgets.get("silver_error"),
-    "gold_analytics": dbutils.widgets.get("gold_error"),
-    "dimensional_warehouse": dbutils.widgets.get("warehouse_error"),
-    "final_quality_gate": dbutils.widgets.get("final_quality_error"),
-}
-
-# Determine root failed task
-fail_task, fail_class, fail_msg = resolve_failed_task_from_states(
-    task_order=task_keys,
-    task_states=task_states,
-    task_errors=task_errors,
+# Determine root failed task from published task values and terminal states
+fail_task, fail_class, fail_msg = resolve_failed_task_from_task_values(
+    primary_tasks=PRIMARY_DAG_TASK_ORDER,
     task_values=task_values,
 )
 
@@ -148,5 +115,3 @@ audit = execute_publish_run_summary_task(
     failure_classification=fail_class,
     error_message=fail_msg,
 )
-
-print(f"Operational Run Audit Recorded: ID={audit.orchestration_run_id}, Status={audit.final_status}, Duration={audit.duration_seconds:.2f}s")

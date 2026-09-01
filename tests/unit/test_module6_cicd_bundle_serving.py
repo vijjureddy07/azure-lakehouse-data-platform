@@ -266,7 +266,7 @@ def test_serving_views_sql_safety_no_destructive_commands():
 
 
 def test_bundle_dev_prod_parameterization_in_lakeflow_job():
-    """Verify that retail_lakehouse_job.yml defaults use Bundle variables rather than hardcoded dev strings."""
+    """Verify that retail_lakehouse_job.yml defaults use Bundle variables and dynamic job metadata."""
     assert LAKEFLOW_JOB_RESOURCE.is_file(), "retail_lakehouse_job.yml must exist."
 
     content = LAKEFLOW_JOB_RESOURCE.read_text(encoding="utf-8")
@@ -280,6 +280,31 @@ def test_bundle_dev_prod_parameterization_in_lakeflow_job():
     assert params.get("container_name") == "${var.container_name}"
     assert params.get("catalog_name") == "${var.catalog_name}"
     assert params.get("quarantine_threshold_rate") == "${var.quarantine_threshold_rate}"
+    assert params.get("job_id") == "{{job.id}}"
+    assert params.get("job_run_id") == "{{job.run_id}}"
+    assert params.get("job_start_time") == "{{job.start_time.iso_datetime}}"
+
+
+def test_primary_task_wrappers_publish_terminal_state():
+    """Verify that each primary task wrapper publishes terminal_state SUCCESS and handles FAILED inside exceptions."""
+    task_files = [
+        REPO_ROOT / "databricks" / "tasks" / "validate_landing.py",
+        REPO_ROOT / "databricks" / "tasks" / "run_bronze.py",
+        REPO_ROOT / "databricks" / "tasks" / "run_silver.py",
+        REPO_ROOT / "databricks" / "tasks" / "run_gold.py",
+        REPO_ROOT / "databricks" / "tasks" / "run_warehouse.py",
+        REPO_ROOT / "databricks" / "tasks" / "final_quality_gate.py",
+    ]
+
+    for f in task_files:
+        assert f.is_file(), f"Task wrapper {f.name} must exist"
+        code = f.read_text(encoding="utf-8")
+        assert 'dbutils.jobs.taskValues.set(key="terminal_state", value="SUCCESS")' in code, (
+            f"Wrapper {f.name} must publish terminal_state = SUCCESS"
+        )
+        assert 'dbutils.jobs.taskValues.set(key="terminal_state", value="FAILED")' in code, (
+            f"Wrapper {f.name} must publish terminal_state = FAILED inside exception handler"
+        )
 
 
 def test_bundle_parameter_compatibility_no_notebook_base_parameters():

@@ -24,6 +24,57 @@ logger = logging.getLogger(__name__)
 FAILED_RESULT_STATES = {"failed", "timedout", "canceled", "evicted", "FAILED", "TIMEDOUT", "CANCELED", "EVICTED"}
 UPSTREAM_RESULT_STATES = {"upstream_failed", "upstream_canceled", "excluded", "UPSTREAM_FAILED", "EXCLUDED"}
 
+PRIMARY_DAG_TASK_ORDER = [
+    "validate_landing_batch",
+    "bronze_ingestion",
+    "silver_transformation",
+    "gold_analytics",
+    "dimensional_warehouse",
+    "final_quality_gate",
+]
+
+
+def resolve_failed_task_from_task_values(
+    primary_tasks: list[str] | None,
+    task_values: TaskValueStore,
+) -> tuple[str | None, str | None, str | None]:
+    """
+    Determine the root failed task, failure classification, and error message
+    from Lakeflow task values published by primary workflow tasks.
+
+    Handles explicit task failures as well as infrastructure terminations
+    (e.g., evictions, cancellations, timeouts) where terminal state was not published.
+
+    Args:
+        primary_tasks: Ordered list of required primary task keys (defaults to PRIMARY_DAG_TASK_ORDER).
+        task_values: TaskValueStore containing values published by tasks in the active job run.
+
+    Returns:
+        tuple: (failure_task, failure_classification, error_message) or (None, None, None) on all-success.
+    """
+    tasks = primary_tasks or PRIMARY_DAG_TASK_ORDER
+
+    # 1. First check if any primary task published an explicit FAILED terminal state
+    for t_key in tasks:
+        terminal_state = (task_values.get(t_key, "terminal_state") or "").strip().upper()
+        if terminal_state == "FAILED":
+            classification = task_values.get(t_key, "failure_classification") or "UNKNOWN"
+            msg = task_values.get(t_key, "failure_message") or f"Task '{t_key}' failed during execution."
+            return t_key, classification, msg
+
+    # 2. Check for missing terminal markers (e.g. infrastructure abort / unexecuted downstream tasks)
+    for t_key in tasks:
+        terminal_state = (task_values.get(t_key, "terminal_state") or "").strip().upper()
+        if terminal_state != "SUCCESS":
+            classification = task_values.get(t_key, "failure_classification") or "UNKNOWN"
+            msg = (
+                task_values.get(t_key, "failure_message")
+                or f"Task '{t_key}' did not publish terminal completion metadata; possible infrastructure termination or upstream execution interruption."
+            )
+            return t_key, classification, msg
+
+    return None, None, None
+
 
 def resolve_failed_task_from_states(
     task_order: list[str],

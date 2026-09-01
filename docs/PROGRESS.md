@@ -8,9 +8,9 @@
 | **Module 2: ADF + ADLS Gen2 Cloud Ingestion** | 🟢 **COMPLETE (Deployment-Ready)**<br>*(Cloud Verification Pending)* | 🟢 **PASSED (14 Tests)** | ⏳ **NOT STUDIED / PENDING** |
 | **Module 3: Databricks + Delta Lake + Medallion** | 🟢 **COMPLETE (Local-Verified)**<br>*(Databricks Cloud Pending)* | 🟢 **PASSED (18 Tests)** | ⏳ **NOT STUDIED / PENDING** |
 | **Module 4: Advanced PySpark, Dimensional Modeling & SCD** | 🟢 **COMPLETE (Local-Verified)**<br>*(Databricks Cloud Pending)* | 🟢 **PASSED (19 Tests)** | ⏳ **NOT STUDIED / PENDING** |
-| **Module 5: Lakeflow Jobs Orchestration + Reliability + Operational Monitoring** | 🟢 **COMPLETE (Local-Verified)**<br>*(Databricks Cloud Pending)* | 🟢 **PASSED (21 Tests)** | ⏳ **NOT STUDIED / PENDING** |
-| **Module 6: Production CI/CD, Declarative Automation Bundles & Governed SQL Serving** | 🟢 **COMPLETE (Local-Verified)**<br>*(Databricks Cloud Pending)* | 🟢 **PASSED (15 Tests)** | ⏳ **NOT STUDIED / PENDING** |
-| **Total Test Suite Pass** | 🟢 **ALL MODULES PASSING** | 🟢 **102 / 102 TESTS PASSED** | ⏳ **NOT STUDIED / PENDING** |
+| **Module 5: Lakeflow Jobs Orchestration + Reliability + Operational Monitoring** | 🟢 **COMPLETE (Local-Verified)**<br>*(Databricks Cloud Pending)* | 🟢 **PASSED (22 Tests)** | ⏳ **NOT STUDIED / PENDING** |
+| **Module 6: Production CI/CD, Declarative Automation Bundles & Governed SQL Serving** | 🟢 **COMPLETE (Local-Verified)**<br>*(Databricks Cloud Pending)* | 🟢 **PASSED (16 Tests)** | ⏳ **NOT STUDIED / PENDING** |
+| **Total Test Suite Pass** | 🟢 **ALL MODULES PASSING** | 🟢 **104 / 104 TESTS PASSED** | ⏳ **NOT STUDIED / PENDING** |
 
 ---
 

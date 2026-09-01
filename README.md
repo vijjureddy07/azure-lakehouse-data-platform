@@ -204,9 +204,9 @@ python -m src.pipelines.dimensional_warehouse_pipeline --scale small
 | `test_adf_artifacts.py` | ADF JSON payloads, Managed Identity, secret scanning, verifier exit codes | 14 | 🟢 PASSED |
 | `test_delta_medallion.py` | Delta transaction log, time travel, schema evolution, MERGE upserts, Gold KPIs | 18 | 🟢 PASSED |
 | `test_dimensional_modeling.py` | Surrogate keys, `dim_date`, SCD1 MERGE, SCD2 intervals, PIT joins, EDQ gates | 19 | 🟢 PASSED |
-| `test_orchestration.py` & `test_orchestration_workflow.py` | Lakeflow DAG, condition tasks, retry taxonomy, repair idempotency, run audit | 21 | 🟢 PASSED |
-| `test_module6_cicd_bundle_serving.py` | Bundle config, SQL warehouse, serving views, fact grain, catalog parameterization, OIDC | 15 | 🟢 PASSED |
-| **Total Test Suite** | **Comprehensive Full Platform Coverage** | **102 / 102** | 🟢 **100% PASS** |
+| `test_orchestration.py` & `test_orchestration_workflow.py` | Lakeflow DAG, condition tasks, retry taxonomy, repair idempotency, run audit | 22 | 🟢 PASSED |
+| `test_module6_cicd_bundle_serving.py` | Bundle config, SQL warehouse, serving views, fact grain, catalog parameterization, OIDC | 16 | 🟢 PASSED |
+| **Total Test Suite** | **Comprehensive Full Platform Coverage** | **104 / 104** | 🟢 **100% PASS** |
 
 ---
 
