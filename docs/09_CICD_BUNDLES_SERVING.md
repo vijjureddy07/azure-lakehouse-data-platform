@@ -26,9 +26,11 @@ graph TD
         CI --> BundleCheck["4. Bundle & Serving Contract Validation"]
         
         ManualTrigger["Operator Dispatch (workflow_dispatch)"] --> CD["CD Workflow (.github/workflows/deploy_databricks.yml)"]
-        CD --> OIDC["GitHub OIDC Token Exchange (No Stored Secrets)"]
-        OIDC --> SP["Databricks Service Principal"]
-        SP --> Validate["databricks bundle validate --target prod"]
+        CD --> CLIPin["Databricks CLI Setup (Pinned to 1.10.0)"]
+        CLIPin --> OIDC["GitHub OIDC Token Exchange (No Stored Secrets)"]
+        OIDC --> SP["Databricks Service Principal (BUNDLE_VAR_deployment_sp_id)"]
+        SP --> VersionCheck["databricks version"]
+        VersionCheck --> Validate["databricks bundle validate --target prod"]
         Validate --> Deploy["databricks bundle deploy --target prod"]
     end
 
@@ -106,6 +108,9 @@ targets:
     variables:
       environment: "dev"
       catalog_name: "retail_lakehouse"
+      storage_account_name: "stlakehousedev"
+      container_name: "lakehouse"
+      serving_warehouse_name: "retail_lakehouse_serving_wh_dev"
 
   prod:
     mode: production
@@ -116,33 +121,39 @@ targets:
     variables:
       environment: "prod"
       catalog_name: "retail_lakehouse_prod"
+      storage_account_name: "stlakehouseprod"
+      container_name: "lakehouse"
+      serving_warehouse_name: "retail_lakehouse_serving_wh_prod"
 ```
 
-### Target Isolation
-- **`dev` Target:** Uses `mode: development`, deploys to the individual developer's workspace directory, prefixes resource names with developer username, and uses development storage accounts.
-- **`prod` Target:** Uses `mode: production`, runs under a governed Service Principal identity (`run_as: { service_principal_name: ... }`), and targets production Unity Catalog schemas.
+### Target Isolation & Parameterization
+- **`dev` Target:** Uses `mode: development`, deploys to the developer's user workspace path, prefixes resource names, and uses development storage accounts.
+- **`prod` Target:** Uses `mode: production`, runs under a governed Service Principal identity (`run_as: { service_principal_name: "${var.deployment_sp_id}" }`), and targets production storage accounts and catalogs.
+- **Job Parameter Compatibility:** `retail_lakehouse_job.yml` defines default values referencing Bundle variables (`${var.environment}`, `${var.storage_account_name}`, `${var.catalog_name}`). Redundant task-level `base_parameters` have been eliminated to comply with Databricks Bundle validation rules, relying on native job parameter pushdown and `dbutils.jobs.taskValues` for runtime task communication.
 
 ---
 
 ## 4. GitHub Actions CI/CD & Zero-Secret OIDC Authentication
 
 ### Continuous Integration (`.github/workflows/ci.yml`)
-Runs on every Pull Request and merge to `main`:
+Runs automatically on every Pull Request and push to `main`:
 1. Checks out repository.
 2. Configures Python 3.11 and Java 17 (Temurin).
 3. Executes Ruff static analysis (`ruff check .`).
-4. Executes complete Pytest suite (Modules 1–6).
+4. Executes complete Pytest suite (102 tests across Modules 1–6).
 5. Builds the Python wheel (`python -m build --wheel`).
 6. Installs wheel in an isolated clean virtualenv and verifies smoke imports.
 7. Validates bundle configuration and serving view SQL syntax.
 
 ### Continuous Deployment (`.github/workflows/deploy_databricks.yml`)
-- **Safe by Default:** Triggered manually via `workflow_dispatch` (not automated on every push).
+- **Safe by Default:** Triggered manually via `workflow_dispatch` (not automated on merge).
 - **Concurrency Control:** `concurrency: { group: databricks-deployment-${{ inputs.target }}, cancel-in-progress: false }` ensures zero overlapping deployments.
+- **Databricks CLI Pin:** Explicitly pinned to stable Databricks CLI `1.10.0` (`uses: databricks/setup-cli@main` with `version: "1.10.0"`).
+- **Version Verification:** Executes `databricks version` prior to validation.
 - **Workload Identity Federation (GitHub OIDC):**
   - Requests token: `permissions: { id-token: write, contents: read }`.
   - Configures `DATABRICKS_AUTH_TYPE: "github-oidc"`.
-  - Uses `DATABRICKS_HOST` and `DATABRICKS_CLIENT_ID` configured in GitHub Environment `production`.
+  - Exposes `DATABRICKS_HOST`, `DATABRICKS_CLIENT_ID`, and passes `BUNDLE_VAR_deployment_sp_id: ${{ vars.DATABRICKS_CLIENT_ID }}`.
   - **Zero Stored Secrets:** No Personal Access Tokens (PATs) or long-lived client secrets are stored in GitHub Secrets.
 
 ---
@@ -156,7 +167,7 @@ The serving layer exposes governed analytical SQL views over the Gold KPI aggreg
 │                        SERVING ARCHITECTURE                            │
 │                                                                        │
 │  COMPUTE: Serverless Databricks SQL Warehouse (PRO SKU, 2X-Small)      │
-│  SCHEMA:  <catalog>.serving (e.g. retail_lakehouse.serving)            │
+│  SCHEMA:  <catalog>.serving (parameterized via :catalog_name)          │
 │  OBJECTS: 8 Governed SQL Views                                         │
 └────────────────────────────────────────────────────────────────────────┘
 ```
@@ -175,28 +186,40 @@ resources:
       enable_serverless_compute: true
 ```
 
-### Governed Serving Views (`databricks/sql/04_serving_views.sql`)
+### Catalog Parameterization (`databricks/sql/04_serving_views.sql`)
+```sql
+USE CATALOG IDENTIFIER(:catalog_name);
 
-| Serving View Name | Source Layer | Underlying Tables | Description |
+CREATE SCHEMA IF NOT EXISTS serving
+COMMENT 'Governed analytical serving layer for SQL analysts, BI tools, and reporting dashboards';
+
+USE SCHEMA serving;
+```
+
+### Governed Serving Views Specification
+
+| Serving View Name | Source Layer | Underlying Tables | Key Columns & Frozen Schema Alignment |
 | :--- | :--- | :--- | :--- |
-| `daily_sales_performance` | Gold | `gold.gold_daily_sales_performance` | Daily sales, profit, returns, and discounts |
-| `monthly_revenue` | Gold | `gold.gold_monthly_revenue` | Monthly net retained revenue and unit volume |
-| `store_region_revenue` | Gold | `gold.gold_revenue_by_store_region` | Store regional performance and average order value |
-| `category_revenue_performance` | Gold | `gold.gold_category_revenue_performance` | Product category sales, profitability, and return rates |
-| `customer_spending_summary` | Gold | `gold.gold_customer_spending_summary` | VIP customer lifetime spend and cohort metrics |
-| `return_refund_performance` | Gold | `gold.gold_return_refund_performance` | Return reasons and refund totals |
-| `sales_detail` | Warehouse | `warehouse.fact_sales` + 5 Dimensions | Line-item sales joined to SCD2 customer, SCD1 product, store, employee, and calendar dimensions |
-| `returns_detail` | Warehouse | `warehouse.fact_returns` + 4 Dimensions | Line-item return records joined to customer, product, store, and date dimensions |
+| `daily_sales_performance` | Gold | `gold.gold_daily_sales_performance` | `order_date`, `total_orders`, `total_units_sold`, `gross_revenue`, `total_discounts`, `net_sales`, `total_cogs`, `gross_profit`, `returns_count`, `total_refunded_amount` |
+| `monthly_revenue` | Gold | `gold.gold_monthly_revenue` | `year`, `month`, `total_orders`, `total_units_sold`, `total_net_revenue`, `total_refunded_amount`, `net_retained_revenue` |
+| `store_region_revenue` | Gold | `gold.gold_revenue_by_store_region` | `store_id`, `store_name`, `store_type`, `region`, `state`, `country`, `total_orders`, `total_net_revenue`, `avg_order_value` *(City excluded per frozen Gold schema)* |
+| `category_revenue_performance` | Gold | `gold.gold_category_revenue_performance` | `category`, `subcategory`, `units_sold`, `gross_revenue`, `total_discounts`, `net_revenue`, `units_returned`, `total_refunded_amount`, `return_rate_pct` *(Uses `subcategory`)* |
+| `customer_spending_summary` | Gold | `gold.gold_customer_spending_summary` | `customer_id`, `first_name`, `last_name`, `email`, `loyalty_tier`, `total_orders`, `lifetime_spend`, `first_order_date`, `latest_order_date`, `avg_order_value` |
+| `return_refund_performance` | Gold | `gold.gold_return_refund_performance` | `return_reason`, `return_count`, `total_refund_amount`, `avg_refund_amount` |
+| `sales_detail` | Warehouse | `warehouse.fact_sales` + Dimensions | Fact columns (`order_item_id`, `order_id`, `order_timestamp`, `order_status`, `channel`, `quantity`, `unit_price`, `gross_amount`, `discount_amount`, `net_amount`, `cost_amount`, `profit_amount`) + Temporal date keys + SCD2 customer (joined on `customer_key`) + SCD1 product (`subcategory`, `product_current_unit_price`) + Store (`region`, `state`, `country`). **Zero dim_employee join to preserve fact grain**. |
+| `returns_detail` | Warehouse | `warehouse.fact_returns` + Dimensions | `return_id`, `order_item_id`, `order_id`, `return_timestamp`, `return_reason`, `return_status`, `refund_amount`, `return_date_key` + Customer (surrogate inherited from original sale) + Product + Store. |
 
 ---
 
 ## 6. Point-in-Time SCD2 Join Correctness in `sales_detail`
 
-In the `sales_detail` serving view, joining `fact_sales` to `dim_customer` is performed on `customer_key`:
+In the `sales_detail` serving view, joining `fact_sales` to `dim_customer` is performed strictly on `customer_key`:
 
 ```sql
 SELECT
     s.order_item_id,
+    s.order_id,
+    s.order_timestamp,
     s.net_amount,
     s.profit_amount,
     c.loyalty_tier AS customer_historical_loyalty_tier,
@@ -209,14 +232,17 @@ JOIN warehouse.dim_customer c ON s.customer_key = c.customer_key
 ### Why This Is Architecturally Critical:
 - `fact_sales.customer_key` was already point-in-time resolved during the Module 4 warehouse load (`order_timestamp >= effective_from AND (order_timestamp < effective_to OR effective_to IS NULL)`).
 - Joining on `customer_key` in the serving layer guarantees that analysts see the **exact customer loyalty tier and address that was valid when the purchase occurred**, without needing expensive or error-prone range joins in BI tools.
+- In `returns_detail`, `customer_key` is inherited from the associated original sale record.
 
 ---
 
 ## 7. Verification Status & Cloud Honesty
 
-- **Local Packaging & Build:** `VERIFIED` (`python -m build --wheel` builds clean wheel and smoke tests pass).
-- **Bundle & Resource Schema:** `VERIFIED` (Automated structural and contract test suite passes).
-- **GitHub Actions CI Workflow:** `IMPLEMENTED / LOCAL TESTED` (Runs clean locally; remote CI execution pending repository push).
-- **Databricks Cloud Deployment:** `PENDING` (Subject to live Azure Databricks workspace and GitHub OIDC federation setup).
-- **Serverless SQL Warehouse Cloud Creation:** `PENDING`
-- **Learning Status:** `NOT STUDIED / PENDING`
+- **Local Packaging & Build:** 🟢 `VERIFIED` (`python -m build --wheel` builds clean wheel and smoke tests pass).
+- **Static Resource Contract Tests:** 🟢 `VERIFIED` (102/102 unit & integration tests pass across Modules 1–6).
+- **GitHub Actions CI Workflow:** 🟢 `IMPLEMENTED / LOCAL TESTED` (Runs clean locally; remote CI execution pending repository push).
+- **Authenticated Databricks Bundle Validation:** ⏳ `PENDING` (Requires live Databricks CLI authentication and workspace connection).
+- **Databricks Cloud Deployment:** ⏳ `PENDING`
+- **Serverless SQL Warehouse Cloud Creation:** ⏳ `PENDING`
+- **Serving Views Cloud Creation:** ⏳ `PENDING`
+- **Learning Status:** ⏳ `NOT STUDIED / PENDING`

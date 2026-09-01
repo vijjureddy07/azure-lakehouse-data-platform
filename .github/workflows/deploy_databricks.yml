@@ -38,6 +38,7 @@ jobs:
       DATABRICKS_AUTH_TYPE: "github-oidc"
       DATABRICKS_HOST: ${{ vars.DATABRICKS_HOST }}
       DATABRICKS_CLIENT_ID: ${{ vars.DATABRICKS_CLIENT_ID }}
+      BUNDLE_VAR_deployment_sp_id: ${{ vars.DATABRICKS_CLIENT_ID }}
 
     steps:
       # 1. Checkout Code
@@ -55,21 +56,28 @@ jobs:
         run: |
           pip install build wheel
 
-      # 3. Setup Official Databricks CLI
+      # 3. Setup Official Databricks CLI (Pinned to 1.10.0)
       - name: Setup Databricks CLI
-        uses: databricks/setup-cli@v0.229.0
+        uses: databricks/setup-cli@main
+        with:
+          version: "1.10.0"
 
-      # 4. Validate Declarative Automation Bundle
+      # 4. Verify Databricks CLI Version
+      - name: Verify Databricks CLI Version
+        run: |
+          databricks version
+
+      # 5. Validate Declarative Automation Bundle
       - name: Validate Bundle
         run: |
           databricks bundle validate --target ${{ inputs.target }}
 
-      # 5. Deploy Bundle to Databricks Workspace
+      # 6. Deploy Bundle to Databricks Workspace
       - name: Deploy Bundle
         run: |
           databricks bundle deploy --target ${{ inputs.target }}
 
-      # 6. Display Deployment Resource Summary
+      # 7. Display Deployment Resource Summary
       - name: Bundle Summary
         run: |
           databricks bundle summary --target ${{ inputs.target }}

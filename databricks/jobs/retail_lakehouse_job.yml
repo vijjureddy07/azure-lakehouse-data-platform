@@ -11,23 +11,23 @@ resources:
       description: "End-to-end Lakeflow Job orchestrating ADF Landing Validation, Bronze Ingestion, Silver Conformance, If/Else Quality Threshold Evaluation, Gold Analytics, Dimensional Warehouse, Operational Quality Gates, and Delta Run Auditing."
       
       # ------------------------------------------------------------------------
-      # Job-Level Parameters (Dynamic & Environment Overrides)
+      # Job-Level Parameters (Bundle Variable Defaults & Dynamic Runtime Values)
       # ------------------------------------------------------------------------
       parameters:
         - name: environment
-          default: "dev"
+          default: "${var.environment}"
         - name: ingestion_date
           default: "{{job.start_time.iso_date}}"
         - name: adf_run_id
           default: "manual_orchestration_run"
         - name: storage_account_name
-          default: "stlakehousedev"
+          default: "${var.storage_account_name}"
         - name: container_name
-          default: "lakehouse"
+          default: "${var.container_name}"
         - name: catalog_name
-          default: "retail_lakehouse"
+          default: "${var.catalog_name}"
         - name: quarantine_threshold_rate
-          default: "0.20"
+          default: "${var.quarantine_threshold_rate}"
 
       # ------------------------------------------------------------------------
       # Health Duration Threshold (Alert if Run Exceeds Baseline)
@@ -47,13 +47,6 @@ resources:
           description: "Prerequisite check verifying that the ADF landing batch exists and contains all 8 required datasets."
           notebook_task:
             notebook_path: "databricks/tasks/validate_landing.py"
-            base_parameters:
-              environment: "{{job.parameters.environment}}"
-              ingestion_date: "{{job.parameters.ingestion_date}}"
-              adf_run_id: "{{job.parameters.adf_run_id}}"
-              storage_account_name: "{{job.parameters.storage_account_name}}"
-              container_name: "{{job.parameters.container_name}}"
-              catalog_name: "{{job.parameters.catalog_name}}"
           timeout_seconds: 600
           max_retries: 0
 
@@ -64,13 +57,6 @@ resources:
             - task_key: validate_landing_batch
           notebook_task:
             notebook_path: "databricks/tasks/run_bronze.py"
-            base_parameters:
-              environment: "{{job.parameters.environment}}"
-              ingestion_date: "{{tasks.validate_landing_batch.values.ingestion_date}}"
-              adf_run_id: "{{tasks.validate_landing_batch.values.adf_run_id}}"
-              storage_account_name: "{{job.parameters.storage_account_name}}"
-              container_name: "{{job.parameters.container_name}}"
-              catalog_name: "{{job.parameters.catalog_name}}"
           timeout_seconds: 1200
           max_retries: 1
           min_retry_interval_millis: 15000
@@ -82,12 +68,6 @@ resources:
             - task_key: bronze_ingestion
           notebook_task:
             notebook_path: "databricks/tasks/run_silver.py"
-            base_parameters:
-              environment: "{{job.parameters.environment}}"
-              ingestion_date: "{{job.parameters.ingestion_date}}"
-              adf_run_id: "{{job.parameters.adf_run_id}}"
-              catalog_name: "{{job.parameters.catalog_name}}"
-              quarantine_threshold_rate: "{{job.parameters.quarantine_threshold_rate}}"
           timeout_seconds: 1800
           max_retries: 0
 
@@ -109,10 +89,6 @@ resources:
               outcome: "true"
           notebook_task:
             notebook_path: "databricks/tasks/quality_attention.py"
-            base_parameters:
-              environment: "{{job.parameters.environment}}"
-              quarantine_rate: "{{tasks.silver_transformation.values.quarantine_rate}}"
-              quarantine_count: "{{tasks.silver_transformation.values.silver_quarantine_rows}}"
           timeout_seconds: 300
 
         # Task 5B: Gold Analytical KPIs (Parallel branch with Warehouse)
@@ -122,11 +98,6 @@ resources:
             - task_key: silver_transformation
           notebook_task:
             notebook_path: "databricks/tasks/run_gold.py"
-            base_parameters:
-              environment: "{{job.parameters.environment}}"
-              storage_account_name: "{{job.parameters.storage_account_name}}"
-              container_name: "{{job.parameters.container_name}}"
-              catalog_name: "{{job.parameters.catalog_name}}"
           timeout_seconds: 1200
           max_retries: 1
           min_retry_interval_millis: 15000
@@ -138,11 +109,6 @@ resources:
             - task_key: silver_transformation
           notebook_task:
             notebook_path: "databricks/tasks/run_warehouse.py"
-            base_parameters:
-              environment: "{{job.parameters.environment}}"
-              storage_account_name: "{{job.parameters.storage_account_name}}"
-              container_name: "{{job.parameters.container_name}}"
-              catalog_name: "{{job.parameters.catalog_name}}"
           timeout_seconds: 2400
           max_retries: 0
 
@@ -154,11 +120,6 @@ resources:
             - task_key: dimensional_warehouse
           notebook_task:
             notebook_path: "databricks/tasks/final_quality_gate.py"
-            base_parameters:
-              environment: "{{job.parameters.environment}}"
-              bronze_rows: "{{tasks.bronze_ingestion.values.bronze_rows_ingested}}"
-              silver_quarantine: "{{tasks.silver_transformation.values.silver_quarantine_rows}}"
-              fact_sales_rows: "{{tasks.dimensional_warehouse.values.fact_sales_rows}}"
           timeout_seconds: 600
           max_retries: 0
 
@@ -170,28 +131,6 @@ resources:
           run_if: ALL_DONE
           notebook_task:
             notebook_path: "databricks/tasks/publish_run_summary.py"
-            base_parameters:
-              job_id: "{{job.id}}"
-              job_run_id: "{{job.run_id}}"
-              job_start_time: "{{job.start_time.iso_datetime}}"
-              environment: "{{job.parameters.environment}}"
-              ingestion_date: "{{job.parameters.ingestion_date}}"
-              adf_run_id: "{{job.parameters.adf_run_id}}"
-              storage_account_name: "{{job.parameters.storage_account_name}}"
-              container_name: "{{job.parameters.container_name}}"
-              catalog_name: "{{job.parameters.catalog_name}}"
-              validate_landing_state: "{{tasks.validate_landing_batch.result_state}}"
-              validate_landing_error: "{{tasks.validate_landing_batch.error_code}}"
-              bronze_state: "{{tasks.bronze_ingestion.result_state}}"
-              bronze_error: "{{tasks.bronze_ingestion.error_code}}"
-              silver_state: "{{tasks.silver_transformation.result_state}}"
-              silver_error: "{{tasks.silver_transformation.error_code}}"
-              gold_state: "{{tasks.gold_analytics.result_state}}"
-              gold_error: "{{tasks.gold_analytics.error_code}}"
-              warehouse_state: "{{tasks.dimensional_warehouse.result_state}}"
-              warehouse_error: "{{tasks.dimensional_warehouse.error_code}}"
-              final_quality_state: "{{tasks.final_quality_gate.result_state}}"
-              final_quality_error: "{{tasks.final_quality_gate.error_code}}"
           timeout_seconds: 300
           max_retries: 1
 

@@ -5,10 +5,13 @@ Validates:
 1. Declarative Automation Bundle root configuration (databricks.yml, includes, targets, variables, artifacts).
 2. Serverless Databricks SQL Warehouse bundle resource (sql_serving.yml).
 3. Serving Setup Job bundle resource (serving_setup_job.yml).
-4. Governed SQL Serving views contracts (04_serving_views.sql, 8 views, safe DDL, SCD2 join fidelity).
-5. GitHub Actions CI workflow (.github/workflows/ci.yml).
-6. GitHub Actions OIDC deployment workflow (.github/workflows/deploy_databricks.yml).
-7. Zero committed credentials, PATs, passwords, or legacy /mnt/ paths across all Module 6 artifacts.
+4. Governed SQL Serving views contracts (04_serving_views.sql, 8 views, safe DDL, SCD2 join fidelity, frozen schema adherence).
+5. Fact grain preservation (sales_detail grain = 1 row per order item, zero dim_employee fanout join).
+6. Catalog parameterization via Databricks SQL named parameter syntax (USE CATALOG IDENTIFIER(:catalog_name)).
+7. Bundle dev/prod parameterization wiring in Lakeflow Jobs without deprecated/conflicting task base_parameters.
+8. GitHub Actions CI workflow (.github/workflows/ci.yml).
+9. GitHub Actions OIDC deployment workflow (.github/workflows/deploy_databricks.yml) with CLI 1.10.0 pin and SP variable wiring.
+10. Zero committed credentials, PATs, passwords, or legacy /mnt/ paths across all Module 6 artifacts.
 """
 
 from __future__ import annotations
@@ -20,6 +23,7 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 BUNDLE_ROOT = REPO_ROOT / "databricks.yml"
+LAKEFLOW_JOB_RESOURCE = REPO_ROOT / "databricks" / "jobs" / "retail_lakehouse_job.yml"
 SQL_SERVING_RESOURCE = REPO_ROOT / "databricks" / "resources" / "sql_serving.yml"
 SERVING_JOB_RESOURCE = REPO_ROOT / "databricks" / "resources" / "serving_setup_job.yml"
 SERVING_SQL_FILE = REPO_ROOT / "databricks" / "sql" / "04_serving_views.sql"
@@ -120,6 +124,7 @@ def test_serving_setup_job_bundle_resource():
     sql_task = task["sql_task"]
     assert "04_serving_views.sql" in sql_task.get("file", {}).get("path", "")
     assert "retail_lakehouse_serving_warehouse" in sql_task.get("warehouse_id", "")
+    assert "catalog_name" in sql_task.get("parameters", {})
 
 
 def test_serving_views_sql_contract():
@@ -147,10 +152,108 @@ def test_serving_views_sql_contract():
         pattern = rf"CREATE\s+OR\s+REPLACE\s+VIEW\s+{v}\s+AS"
         assert re.search(pattern, content, re.IGNORECASE), f"View '{v}' must be defined in 04_serving_views.sql"
 
-    # Verify SCD2 customer join fidelity in sales_detail
-    assert "JOIN warehouse.dim_customer c ON s.customer_key = c.customer_key" in content, (
-        "sales_detail view must join dim_customer on customer_key to preserve point-in-time SCD2 resolution."
+
+def test_serving_views_catalog_parameterization():
+    """Verify that 04_serving_views.sql uses Databricks SQL IDENTIFIER(:catalog_name) syntax."""
+    content = SERVING_SQL_FILE.read_text(encoding="utf-8")
+    assert "USE CATALOG IDENTIFIER(:catalog_name);" in content, (
+        "04_serving_views.sql must parameterize catalog selection with USE CATALOG IDENTIFIER(:catalog_name);"
     )
+
+
+def test_serving_views_gold_schema_contract():
+    """Verify that Gold serving views strictly match the frozen schema contracts in src/medallion/gold.py."""
+    content = SERVING_SQL_FILE.read_text(encoding="utf-8")
+
+    # Extract store_region_revenue view text
+    store_match = re.search(
+        r"CREATE\s+OR\s+REPLACE\s+VIEW\s+store_region_revenue\s+AS\s+SELECT(.*?)FROM\s+gold\.gold_revenue_by_store_region;",
+        content,
+        re.DOTALL | re.IGNORECASE,
+    )
+    assert store_match is not None, "store_region_revenue view definition not found"
+    store_sql = store_match.group(1)
+
+    # Must contain region and must NOT contain city
+    assert "region" in store_sql
+    assert "city" not in store_sql.lower(), "store_region_revenue must NOT contain nonexistent 'city' column"
+
+    # Extract category_revenue_performance view text
+    cat_match = re.search(
+        r"CREATE\s+OR\s+REPLACE\s+VIEW\s+category_revenue_performance\s+AS\s+SELECT(.*?)FROM\s+gold\.gold_category_revenue_performance;",
+        content,
+        re.DOTALL | re.IGNORECASE,
+    )
+    assert cat_match is not None, "category_revenue_performance view definition not found"
+    cat_sql = cat_match.group(1)
+
+    # Must contain subcategory and must NOT contain sub_category
+    assert "subcategory" in cat_sql
+    assert "sub_category" not in cat_sql, "category_revenue_performance must use 'subcategory', not 'sub_category'"
+
+
+def test_serving_views_warehouse_fact_sales_and_grain_preservation():
+    """Verify that sales_detail adheres to frozen fact_sales columns, joins SCD2 on customer_key, and does NOT join dim_employee."""
+    content = SERVING_SQL_FILE.read_text(encoding="utf-8")
+
+    sales_match = re.search(
+        r"CREATE\s+OR\s+REPLACE\s+VIEW\s+sales_detail\s+AS\s+SELECT(.*?)FROM\s+warehouse\.fact_sales\s+s(.*?);",
+        content,
+        re.DOTALL | re.IGNORECASE,
+    )
+    assert sales_match is not None, "sales_detail view definition not found"
+    select_clause = sales_match.group(1)
+    join_clause = sales_match.group(2)
+
+    # Prohibited manufactured/nonexistent columns
+    prohibited_cols = ["sales_key", "payment_method", "employee_key", "current_retail_price", "sub_category", "store_city"]
+    for col_name in prohibited_cols:
+        assert col_name not in select_clause.lower(), f"sales_detail must NOT reference nonexistent column '{col_name}'"
+
+    # Required real fact columns
+    required_cols = [
+        "order_item_id", "order_id", "order_timestamp", "order_status", "channel",
+        "quantity", "unit_price", "gross_amount", "discount_amount", "net_amount",
+        "cost_amount", "profit_amount", "customer_key", "product_key", "store_key", "order_date_key",
+    ]
+    for col_name in required_cols:
+        assert col_name in select_clause, f"sales_detail must reference valid column '{col_name}'"
+
+    # Verify SCD2 customer join fidelity
+    assert "JOIN warehouse.dim_customer c ON s.customer_key = c.customer_key" in join_clause
+
+    # Verify dim_employee is NOT joined (to prevent one-to-many grain explosion)
+    assert "dim_employee" not in join_clause, "sales_detail must NOT join dim_employee to prevent 1-to-many grain explosion."
+
+
+def test_serving_views_warehouse_fact_returns_contract():
+    """Verify that returns_detail adheres to frozen fact_returns columns and inherits customer surrogate key."""
+    content = SERVING_SQL_FILE.read_text(encoding="utf-8")
+
+    ret_match = re.search(
+        r"CREATE\s+OR\s+REPLACE\s+VIEW\s+returns_detail\s+AS\s+SELECT(.*?)FROM\s+warehouse\.fact_returns\s+r(.*?);",
+        content,
+        re.DOTALL | re.IGNORECASE,
+    )
+    assert ret_match is not None, "returns_detail view definition not found"
+    select_clause = ret_match.group(1)
+    join_clause = ret_match.group(2)
+
+    # Prohibited columns
+    prohibited_cols = ["return_key", "return_quantity", "sub_category"]
+    for col_name in prohibited_cols:
+        assert col_name not in select_clause.lower(), f"returns_detail must NOT reference nonexistent column '{col_name}'"
+
+    # Required real columns
+    required_cols = [
+        "return_id", "order_item_id", "order_id", "return_timestamp",
+        "return_reason", "return_status", "refund_amount", "return_date_key",
+    ]
+    for col_name in required_cols:
+        assert col_name in select_clause, f"returns_detail must reference valid column '{col_name}'"
+
+    # Joins
+    assert "JOIN warehouse.dim_customer c ON r.customer_key = c.customer_key" in join_clause
 
 
 def test_serving_views_sql_safety_no_destructive_commands():
@@ -160,6 +263,39 @@ def test_serving_views_sql_safety_no_destructive_commands():
     destructive_keywords = ["DROP TABLE", "DELETE FROM", "TRUNCATE TABLE", "MERGE INTO"]
     for kw in destructive_keywords:
         assert kw not in content, f"Destructive command '{kw}' prohibited in serving views SQL."
+
+
+def test_bundle_dev_prod_parameterization_in_lakeflow_job():
+    """Verify that retail_lakehouse_job.yml defaults use Bundle variables rather than hardcoded dev strings."""
+    assert LAKEFLOW_JOB_RESOURCE.is_file(), "retail_lakehouse_job.yml must exist."
+
+    content = LAKEFLOW_JOB_RESOURCE.read_text(encoding="utf-8")
+    parsed = yaml.safe_load(content)
+
+    job = parsed["resources"]["jobs"]["retail_lakehouse_batch_pipeline"]
+    params = {p["name"]: p.get("default", "") for p in job.get("parameters", [])}
+
+    assert params.get("environment") == "${var.environment}"
+    assert params.get("storage_account_name") == "${var.storage_account_name}"
+    assert params.get("container_name") == "${var.container_name}"
+    assert params.get("catalog_name") == "${var.catalog_name}"
+    assert params.get("quarantine_threshold_rate") == "${var.quarantine_threshold_rate}"
+
+
+def test_bundle_parameter_compatibility_no_notebook_base_parameters():
+    """Verify that notebook tasks in retail_lakehouse_job.yml do not contain conflicting base_parameters."""
+    content = LAKEFLOW_JOB_RESOURCE.read_text(encoding="utf-8")
+    parsed = yaml.safe_load(content)
+
+    job = parsed["resources"]["jobs"]["retail_lakehouse_batch_pipeline"]
+    tasks = job.get("tasks", [])
+
+    for t in tasks:
+        nb_task = t.get("notebook_task")
+        if nb_task is not None:
+            assert "base_parameters" not in nb_task, (
+                f"Task '{t.get('task_key')}' contains base_parameters, which conflicts with job-level parameters in Bundle validation."
+            )
 
 
 def test_ci_workflow_structure_and_security():
@@ -185,7 +321,7 @@ def test_ci_workflow_structure_and_security():
 
 
 def test_deploy_workflow_structure_and_oidc_security():
-    """Verify that the deployment workflow uses workflow_dispatch, GitHub OIDC, and concurrency control."""
+    """Verify that the deployment workflow uses workflow_dispatch, GitHub OIDC, Databricks CLI 1.10.0, and SP wiring."""
     assert DEPLOY_WORKFLOW_FILE.is_file(), ".github/workflows/deploy_databricks.yml must exist."
 
     content = DEPLOY_WORKFLOW_FILE.read_text(encoding="utf-8")
@@ -210,20 +346,29 @@ def test_deploy_workflow_structure_and_oidc_security():
     assert env_vars.get("DATABRICKS_AUTH_TYPE") == "github-oidc"
     assert "DATABRICKS_HOST" in env_vars
     assert "DATABRICKS_CLIENT_ID" in env_vars
+    assert "BUNDLE_VAR_deployment_sp_id" in env_vars
     assert "DATABRICKS_TOKEN" not in content
     assert "DATABRICKS_CLIENT_SECRET" not in content
 
-    # Deployment steps: validate then deploy
+    # Deployment steps: CLI version check, validate, then deploy
     steps = deploy_job.get("steps", [])
     step_runs = [s.get("run", "") for s in steps]
+
+    assert any("databricks version" in r for r in step_runs), "Deployment must execute databricks version"
     assert any("bundle validate" in r for r in step_runs), "Deployment must validate bundle before deploying"
     assert any("bundle deploy" in r for r in step_runs), "Deployment must deploy bundle"
+
+    # Setup-cli version pin
+    cli_step = next((s for s in steps if "Setup Databricks CLI" in s.get("name", "")), None)
+    assert cli_step is not None, "Setup Databricks CLI step must exist"
+    assert cli_step.get("with", {}).get("version") == "1.10.0", "Databricks CLI must be pinned to 1.10.0"
 
 
 def test_secret_scanning_across_module6_artifacts():
     """Verify that zero committed passwords, PATs, SAS tokens, or personal emails exist in Module 6 files."""
     scan_files = [
         BUNDLE_ROOT,
+        LAKEFLOW_JOB_RESOURCE,
         SQL_SERVING_RESOURCE,
         SERVING_JOB_RESOURCE,
         SERVING_SQL_FILE,

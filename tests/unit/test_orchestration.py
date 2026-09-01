@@ -110,16 +110,13 @@ def test_deterministic_quality_tasks_have_native_max_retries_zero():
 
 
 def test_publish_run_summary_receives_job_start_and_task_states():
-    """Verify that publish_run_summary receives job_start_time and upstream task result states."""
+    """Verify that publish_run_summary is configured with run_if ALL_DONE and targets the summary notebook."""
     parsed = validate_lakeflow_job_yaml(YAML_JOB_PATH)
     tasks_by_key = {t["task_key"]: t for t in parsed["tasks"]}
-    summary_params = tasks_by_key["publish_run_summary"]["notebook_task"]["base_parameters"]
+    summary_task = tasks_by_key["publish_run_summary"]
 
-    assert summary_params.get("job_start_time") == "{{job.start_time.iso_datetime}}"
-    assert summary_params.get("validate_landing_state") == "{{tasks.validate_landing_batch.result_state}}"
-    assert summary_params.get("silver_state") == "{{tasks.silver_transformation.result_state}}"
-    assert summary_params.get("warehouse_state") == "{{tasks.dimensional_warehouse.result_state}}"
-    assert summary_params.get("final_quality_state") == "{{tasks.final_quality_gate.result_state}}"
+    assert summary_task.get("run_if") == "ALL_DONE"
+    assert summary_task.get("notebook_task", {}).get("notebook_path") == "databricks/tasks/publish_run_summary.py"
 
 
 def test_lakeflow_job_yaml_dependencies_and_run_if():

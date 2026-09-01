@@ -9,8 +9,8 @@
 | **Module 3: Databricks + Delta Lake + Medallion** | 🟢 **COMPLETE (Local-Verified)**<br>*(Databricks Cloud Pending)* | 🟢 **PASSED (18 Tests)** | ⏳ **NOT STUDIED / PENDING** |
 | **Module 4: Advanced PySpark, Dimensional Modeling & SCD** | 🟢 **COMPLETE (Local-Verified)**<br>*(Databricks Cloud Pending)* | 🟢 **PASSED (19 Tests)** | ⏳ **NOT STUDIED / PENDING** |
 | **Module 5: Lakeflow Jobs Orchestration + Reliability + Operational Monitoring** | 🟢 **COMPLETE (Local-Verified)**<br>*(Databricks Cloud Pending)* | 🟢 **PASSED (21 Tests)** | ⏳ **NOT STUDIED / PENDING** |
-| **Module 6: Production CI/CD, Declarative Automation Bundles & Governed SQL Serving** | 🟢 **COMPLETE (Local-Verified)**<br>*(Databricks Cloud Pending)* | 🟢 **PASSED (9 Tests)** | ⏳ **NOT STUDIED / PENDING** |
-| **Total Test Suite Pass** | 🟢 **ALL MODULES PASSING** | 🟢 **96 / 96 TESTS PASSED** | ⏳ **NOT STUDIED / PENDING** |
+| **Module 6: Production CI/CD, Declarative Automation Bundles & Governed SQL Serving** | 🟢 **COMPLETE (Local-Verified)**<br>*(Databricks Cloud Pending)* | 🟢 **PASSED (15 Tests)** | ⏳ **NOT STUDIED / PENDING** |
+| **Total Test Suite Pass** | 🟢 **ALL MODULES PASSING** | 🟢 **102 / 102 TESTS PASSED** | ⏳ **NOT STUDIED / PENDING** |
 
 ---
 
@@ -18,13 +18,13 @@
 
 - [x] **Python Wheel Packaging:** Extended `pyproject.toml` with setuptools build-system (`[build-system]`, `[project]`) producing versioned `retail_lakehouse_data_platform-0.1.0-py3-none-any.whl` containing all core library subpackages with 100% clean smoke imports.
 - [x] **Declarative Automation Bundle Specification:** Created root `databricks.yml` managing lakehouse resources as code with multi-environment targets (`dev` with `mode: development`, `prod` with `mode: production` and Service Principal `run_as` identity).
-- [x] **Zero-Secret Bundle Configuration:** Enforced unified environment variables (`catalog_name`, `storage_account_name`, `container_name`, `serving_warehouse_name`, `deployment_sp_id`) with zero hardcoded PATs, passwords, or personal emails.
+- [x] **Bundle Variable Parameterization & Compatibility:** Configured job-level parameters in `databricks/jobs/retail_lakehouse_job.yml` referencing Bundle variables (`${var.environment}`, `${var.storage_account_name}`, `${var.catalog_name}`) and removed conflicting task-level `base_parameters`, relying on native parameter pushdown and `dbutils.jobs.taskValues`.
 - [x] **Serverless SQL Warehouse Resource:** Defined declarative PRO SQL Warehouse resource in `databricks/resources/sql_serving.yml` with `enable_serverless_compute: true`, `cluster_size: 2X-Small`, and `auto_stop_mins: 10`.
-- [x] **Governed SQL Serving Views:** Implemented 8 analytical views in `databricks/sql/04_serving_views.sql` (`<catalog>.serving.*`) exposing 6 Gold KPI aggregates and 2 Kimball warehouse views, joining `fact_sales` to `dim_customer` on surrogate `customer_key` to preserve historical SCD2 fidelity.
+- [x] **Governed SQL Serving Views & Frozen Schemas:** Implemented 8 analytical views in `databricks/sql/04_serving_views.sql` (`<catalog>.serving.*`) strictly matching frozen Module 3/4 schemas. Parameterized catalog via `USE CATALOG IDENTIFIER(:catalog_name);`. Joined `fact_sales` to `dim_customer` on `customer_key` preserving SCD2 fidelity while omitting `dim_employee` to preserve fact grain.
 - [x] **Serving Setup Bundle Job:** Created `databricks/resources/serving_setup_job.yml` executing the SQL serving DDL against the managed Serverless SQL Warehouse.
-- [x] **GitHub Actions Continuous Integration (CI):** Built `.github/workflows/ci.yml` running Python 3.11, Java 17, Ruff static analysis, full 96-test Pytest suite, wheel packaging, and bundle structural validation without requiring Databricks credentials.
-- [x] **Zero-Secret Continuous Deployment (CD):** Built `.github/workflows/deploy_databricks.yml` using GitHub Workload Identity Federation (OIDC) with `DATABRICKS_AUTH_TYPE: "github-oidc"`, concurrency protection, and manual `workflow_dispatch` safety.
-- [x] **Automated Test Suite & Linting:** Added 9 dedicated unit and contract tests in `tests/unit/test_module6_cicd_bundle_serving.py` verifying bundle structure, SQL warehouse specs, serving SQL view contracts, GitHub workflows, and secret scanning (96/96 tests passing repository-wide).
+- [x] **GitHub Actions Continuous Integration (CI):** Built `.github/workflows/ci.yml` running Python 3.11, Java 17, Ruff static analysis, full 102-test Pytest suite, wheel packaging, and bundle structural validation without requiring Databricks credentials.
+- [x] **Zero-Secret Continuous Deployment (CD):** Built `.github/workflows/deploy_databricks.yml` using GitHub Workload Identity Federation (OIDC) with `DATABRICKS_AUTH_TYPE: "github-oidc"`, pinned Databricks CLI `1.10.0`, `databricks version` step, `BUNDLE_VAR_deployment_sp_id` wiring, and manual `workflow_dispatch` safety.
+- [x] **Automated Test Suite & Linting:** 15 dedicated unit and contract tests in `tests/unit/test_module6_cicd_bundle_serving.py` verifying bundle structure, SQL warehouse specs, serving SQL view contracts, fact grain preservation, catalog parameterization, CI/CD workflow security, and secret scanning (102/102 tests passing repository-wide).
 - [x] **Module 6 Documentation & Guides:** Authored `docs/09_CICD_BUNDLES_SERVING.md` and updated `README.md`, `00_LEARNING_INDEX.md`, `IMPLEMENTATION_MAP.md`, and `INTERVIEW_QA.md`.
 
 ---

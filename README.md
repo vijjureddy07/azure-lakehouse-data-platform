@@ -15,7 +15,7 @@ This repository implements an end-to-end, enterprise-grade cloud data platform f
 3. **Module 3 (Databricks Delta Lake Medallion Architecture):** Delta transaction log ACID transactions, time travel, schema enforcement/evolution, Medallion Bronze/Silver/Gold layers, idempotent Delta MERGE, and Unity Catalog 3-level namespace.
 4. **Module 4 (Kimball Dimensional Modeling & SCD):** Enterprise star schema (`dim_customer` SCD2, `dim_product` SCD1, `dim_store`, `dim_employee`, `dim_date`, `fact_sales`, `fact_returns`), deterministic surrogate keys, point-in-time fact resolution, and enterprise data quality gates.
 5. **Module 5 (Lakeflow Jobs Orchestration & Operational Auditing):** Multi-task DAG, Task Values cross-task telemetry, condition tasks, two-tier retry taxonomy (in-process transient vs fail-fast data quality), idempotent repair runs, and durable `JobRunAudit` Delta ledger.
-6. **Module 6 (Production CI/CD, Bundles & Governed SQL Serving):** Python wheel packaging (`.whl`), Declarative Automation Bundles (IaC for `dev`/`prod`), GitHub Actions CI (Ruff, 96 Pytests, wheel smoke tests), zero-secret GitHub OIDC deployment, Serverless Databricks SQL Warehouse, and 8 governed Unity Catalog serving views.
+6. **Module 6 (Production CI/CD, Bundles & Governed SQL Serving):** Python wheel packaging (`.whl`), Declarative Automation Bundles (IaC for `dev`/`prod`), GitHub Actions CI (Ruff, 102 Pytests, wheel smoke tests), zero-secret GitHub OIDC deployment, Serverless Databricks SQL Warehouse, and 8 governed Unity Catalog serving views.
 
 ---
 
@@ -81,15 +81,16 @@ This repository implements an end-to-end, enterprise-grade cloud data platform f
   ====================================================================================================
   [ Developer PR / Push ] ──► GitHub Actions CI (.github/workflows/ci.yml)
                                  ├── 1. Ruff Static Analysis (0 errors)
-                                 ├── 2. Full Pytest Suite (96/96 tests passed)
+                                 ├── 2. Full Pytest Suite (102/102 tests passed)
                                  ├── 3. Build & Smoke Test Python Wheel (.whl)
                                  └── 4. Bundle & Serving Contract Validation
                                  
   [ Operator Release ] ────► GitHub Actions CD (.github/workflows/deploy_databricks.yml)
                                  ├── 1. Workload Identity Federation (GitHub OIDC Token Exchange)
-                                 ├── 2. Authenticate Databricks Service Principal (Zero Stored Secrets)
-                                 ├── 3. databricks bundle validate --target prod
-                                 └── 4. databricks bundle deploy --target prod
+                                 ├── 2. Authenticate Databricks Service Principal (BUNDLE_VAR_deployment_sp_id)
+                                 ├── 3. databricks version (Pinned to 1.10.0)
+                                 ├── 4. databricks bundle validate --target prod
+                                 └── 5. databricks bundle deploy --target prod
 ```
 
 ---
@@ -137,7 +138,7 @@ returns (return_id PK)
 - **Root Bundle Config (`databricks.yml`):** Unified IaC declaration with `dev` and `prod` targets.
 - **Python Wheel Packaging:** Packages core business logic (`src/`) into `retail_lakehouse_data_platform-0.1.0-py3-none-any.whl`.
 - **Serverless SQL Warehouse (`databricks/resources/sql_serving.yml`):** Minimal `2X-Small` PRO compute with 10-minute auto-stop.
-- **Governed SQL Serving (`databricks/sql/04_serving_views.sql`):** 8 analytical views in `retail_lakehouse.serving.*`. The `sales_detail` view joins `fact_sales` to `dim_customer` on surrogate `customer_key`, guaranteeing historical loyalty tier accuracy for BI queries.
+- **Governed SQL Serving (`databricks/sql/04_serving_views.sql`):** 8 analytical views in `retail_lakehouse.serving.*`. The `sales_detail` view joins `fact_sales` to `dim_customer` on surrogate `customer_key`, guaranteeing historical loyalty tier accuracy for BI queries without `dim_employee` fanout.
 
 ---
 
@@ -160,12 +161,12 @@ source .venv/bin/activate
 pip install -r requirements-dev.txt
 ```
 
-### 2. Run Quality Checks & Test Suite (96 Tests)
+### 2. Run Quality Checks & Test Suite (102 Tests)
 ```bash
 # Static Code Quality
 ruff check .
 
-# Automated Pytest Suite across Modules 1–6 (96 tests)
+# Automated Pytest Suite across Modules 1–6 (102 tests)
 pytest -v
 ```
 
@@ -177,7 +178,7 @@ python -m build --wheel
 # Smoke test installation
 python -m venv /tmp/smoke_env
 /tmp/smoke_env/bin/pip install dist/*.whl
-/tmp/smoke_env/bin/python -c "import src.orchestration.models; import src.modeling.dimensions; print('Wheel Installed Cleanly!')"
+/tmp/smoke_env/bin/python -c "import src.orchestration.models; import src.modeling.dimensions; import src.medallion.silver; print('Wheel Installed Cleanly!')"
 rm -rf /tmp/smoke_env
 ```
 
@@ -204,8 +205,8 @@ python -m src.pipelines.dimensional_warehouse_pipeline --scale small
 | `test_delta_medallion.py` | Delta transaction log, time travel, schema evolution, MERGE upserts, Gold KPIs | 18 | 🟢 PASSED |
 | `test_dimensional_modeling.py` | Surrogate keys, `dim_date`, SCD1 MERGE, SCD2 intervals, PIT joins, EDQ gates | 19 | 🟢 PASSED |
 | `test_orchestration.py` & `test_orchestration_workflow.py` | Lakeflow DAG, condition tasks, retry taxonomy, repair idempotency, run audit | 21 | 🟢 PASSED |
-| `test_module6_cicd_bundle_serving.py` | Bundle config, SQL warehouse, serving views, GitHub workflows, OIDC security | 9 | 🟢 PASSED |
-| **Total Test Suite** | **Comprehensive Full Platform Coverage** | **96 / 96** | 🟢 **100% PASS** |
+| `test_module6_cicd_bundle_serving.py` | Bundle config, SQL warehouse, serving views, fact grain, catalog parameterization, OIDC | 15 | 🟢 PASSED |
+| **Total Test Suite** | **Comprehensive Full Platform Coverage** | **102 / 102** | 🟢 **100% PASS** |
 
 ---
 
@@ -230,6 +231,8 @@ python -m src.pipelines.dimensional_warehouse_pipeline --scale small
 
 ## 🔒 Cloud Verification & Learning Status
 
-- **Local Implementation & Automated Testing:** 🟢 **100% COMPLETE & VERIFIED** (96/96 tests passing, 0 Ruff errors)
+- **Local Implementation & Automated Testing:** 🟢 **100% COMPLETE & VERIFIED** (102/102 tests passing, 0 Ruff errors)
+- **Static Resource Contract Tests:** 🟢 **VERIFIED**
+- **Authenticated Databricks Bundle Validation:** ⏳ **PENDING** (Requires live Databricks CLI authentication and workspace connection)
 - **Cloud Deployment Verification:** ⏳ **PENDING** (Live deployment requires active Azure subscription and Databricks workspace credentials)
 - **Learning Status:** ⏳ **NOT STUDIED / PENDING** (Maintained per workflow rule: `BUILD FIRST -> DOCUMENT EVERYTHING -> LEARN LATER`)

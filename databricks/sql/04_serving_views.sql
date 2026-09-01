@@ -10,6 +10,8 @@
 -- 2. Kimball Dimensional Model (2 enriched analytical views)
 -- ==============================================================================
 
+USE CATALOG IDENTIFIER(:catalog_name);
+
 CREATE SCHEMA IF NOT EXISTS serving
 COMMENT 'Governed analytical serving layer for SQL analysts, BI tools, and reporting dashboards';
 
@@ -52,7 +54,7 @@ SELECT
     store_id,
     store_name,
     store_type,
-    city,
+    region,
     state,
     country,
     total_orders,
@@ -64,13 +66,14 @@ FROM gold.gold_revenue_by_store_region;
 CREATE OR REPLACE VIEW category_revenue_performance AS
 SELECT
     category,
-    sub_category,
+    subcategory,
     units_sold,
     gross_revenue,
+    total_discounts,
     net_revenue,
     units_returned,
-    return_rate_pct,
-    total_refunded_amount
+    total_refunded_amount,
+    return_rate_pct
 FROM gold.gold_category_revenue_performance;
 
 -- 1.5 Customer Spending Summary
@@ -83,9 +86,9 @@ SELECT
     loyalty_tier,
     total_orders,
     lifetime_spend,
-    avg_order_value,
     first_order_date,
-    latest_order_date
+    latest_order_date,
+    avg_order_value
 FROM gold.gold_customer_spending_summary;
 
 -- 1.6 Return and Refund Performance
@@ -102,15 +105,18 @@ FROM gold.gold_return_refund_performance;
 -- ==============================================================================
 
 -- 2.1 Enriched Sales Detail (Point-in-Time SCD2 Customer Resolution)
+-- Grain: EXACTLY ONE ROW PER FACT_SALES ROW (1 row per valid Silver order item).
 -- Joins fact_sales directly to dim_customer via customer_key (the PIT resolved SCD2 surrogate key),
 -- preserving the exact customer loyalty tier and address that was valid when the purchase occurred.
+-- Note: Does NOT join dim_employee to prevent 1-to-many fanout and preserve fact grain.
 CREATE OR REPLACE VIEW sales_detail AS
 SELECT
     -- Fact Grain & Line Items
-    s.sales_key,
     s.order_item_id,
     s.order_id,
     s.order_timestamp,
+    s.order_status,
+    s.channel,
     s.quantity,
     s.unit_price,
     s.gross_amount,
@@ -118,10 +124,9 @@ SELECT
     s.net_amount,
     s.cost_amount,
     s.profit_amount,
-    s.order_status,
-    s.payment_method,
 
     -- Temporal Dimension
+    d.date_key AS order_date_key,
     d.full_date AS order_date,
     d.year AS order_year,
     d.quarter_name AS order_quarter,
@@ -129,7 +134,7 @@ SELECT
     d.day_name AS order_day_of_week,
     d.is_weekend AS is_weekend_order,
 
-    -- SCD2 Customer Dimension (Point-in-Time Attributes)
+    -- SCD2 Customer Dimension (Point-in-Time Attributes at Sale Time)
     c.customer_key,
     c.customer_id,
     c.first_name AS customer_first_name,
@@ -140,69 +145,73 @@ SELECT
     c.state AS customer_historical_state,
     c.postal_code AS customer_historical_postal_code,
 
-    -- SCD1 Product Dimension (Current Attributes)
+    -- SCD1 Product Dimension (Current Type-1 Attributes)
     p.product_key,
     p.product_id,
+    p.product_sku,
     p.product_name,
     p.category AS product_category,
     p.subcategory AS product_subcategory,
-    p.current_retail_price,
+    p.unit_price AS product_current_unit_price,
 
     -- Store Dimension
     st.store_key,
     st.store_id,
     st.store_name,
     st.store_type,
-    st.city AS store_city,
-    st.state AS store_state,
     st.region AS store_region,
-
-    -- Employee Dimension
-    e.employee_key,
-    e.employee_id,
-    e.first_name AS employee_first_name,
-    e.last_name AS employee_last_name,
-    e.role AS employee_role
+    st.state AS store_state,
+    st.country AS store_country
 
 FROM warehouse.fact_sales s
 JOIN warehouse.dim_date d ON s.order_date_key = d.date_key
 JOIN warehouse.dim_customer c ON s.customer_key = c.customer_key
 JOIN warehouse.dim_product p ON s.product_key = p.product_key
-JOIN warehouse.dim_store st ON s.store_key = st.store_key
-JOIN warehouse.dim_employee e ON s.employee_key = e.employee_key;
+JOIN warehouse.dim_store st ON s.store_key = st.store_key;
 
 -- 2.2 Enriched Returns Detail
+-- Grain: EXACTLY ONE ROW PER FACT_RETURNS ROW (1 row per valid return event).
+-- Note: Customer surrogate key (customer_key) is inherited from the associated original sale.
 CREATE OR REPLACE VIEW returns_detail AS
 SELECT
-    r.return_key,
+    -- Fact Grain
     r.return_id,
     r.order_item_id,
     r.order_id,
     r.return_timestamp,
-    r.return_quantity,
-    r.refund_amount,
     r.return_reason,
+    r.return_status,
+    r.refund_amount,
 
     -- Temporal Dimension
+    d.date_key AS return_date_key,
     d.full_date AS return_date,
     d.year AS return_year,
     d.month_name AS return_month,
 
-    -- Customer Dimension (Historical at Return Time)
+    -- Customer Dimension (Historical attributes inherited from the original sale)
+    c.customer_key,
     c.customer_id,
     c.first_name AS customer_first_name,
     c.last_name AS customer_last_name,
-    c.loyalty_tier AS customer_loyalty_tier,
+    c.loyalty_tier AS customer_historical_loyalty_tier,
 
     -- Product Dimension
+    p.product_key,
     p.product_id,
+    p.product_sku,
     p.product_name,
     p.category AS product_category,
+    p.subcategory AS product_subcategory,
 
     -- Store Dimension
+    st.store_key,
     st.store_id,
     st.store_name,
-    st.region AS store_region
+    st.store_type,
+    st.region AS store_region,
+    st.state AS store_state,
+    st.country AS store_country
 
 FROM warehouse.fact_returns r
 JOIN warehouse.dim_date d ON r.return_date_key = d.date_key

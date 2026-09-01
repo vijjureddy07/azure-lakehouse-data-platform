@@ -18,8 +18,17 @@ dbutils.widgets.text("quarantine_rate", "0.0", "Quarantine Rate")
 dbutils.widgets.text("quarantine_count", "0", "Quarantine Count")
 
 env = dbutils.widgets.get("environment")
-quarantine_rate = float(dbutils.widgets.get("quarantine_rate") or "0.0")
-quarantine_count = int(dbutils.widgets.get("quarantine_count") or "0")
+
+# Retrieve values from upstream task values if available, otherwise fallback to widget
+try:
+    quarantine_rate = float(dbutils.jobs.taskValues.get(taskKey="silver_transformation", key="quarantine_rate", default="0.0"))
+except Exception:
+    quarantine_rate = float(dbutils.widgets.get("quarantine_rate") or "0.0")
+
+try:
+    quarantine_count = int(dbutils.jobs.taskValues.get(taskKey="silver_transformation", key="silver_quarantine_rows", default="0"))
+except Exception:
+    quarantine_count = int(dbutils.widgets.get("quarantine_count") or "0")
 
 print("=" * 70)
 print(f"⚠️  QUALITY ATTENTION ALERT (Environment: {env.upper()})")
