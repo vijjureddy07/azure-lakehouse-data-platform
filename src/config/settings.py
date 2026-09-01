@@ -86,6 +86,7 @@ DELTA_DIR = OUTPUT_DIR / "delta"
 BRONZE_DIR = DELTA_DIR / "bronze"
 SILVER_DIR = DELTA_DIR / "silver"
 GOLD_DIR = DELTA_DIR / "gold"
+WAREHOUSE_DIR = DELTA_DIR / "warehouse"
 DELTA_QUARANTINE_DIR = SILVER_DIR / "quarantine"
 LANDING_DIR = DATA_DIR / "landing"
 
@@ -97,6 +98,7 @@ class MedallionConfig:
     bronze_schema: str = "bronze"
     silver_schema: str = "silver"
     gold_schema: str = "gold"
+    warehouse_schema: str = "warehouse"
     landing_root: Path = LANDING_DIR
     delta_root: Path = DELTA_DIR
     environment: str = "dev"
@@ -130,6 +132,8 @@ def ensure_directories():
         BRONZE_DIR,
         SILVER_DIR,
         GOLD_DIR,
+        WAREHOUSE_DIR,
         DELTA_QUARANTINE_DIR,
     ]:
         path.mkdir(parents=True, exist_ok=True)
+

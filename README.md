@@ -13,6 +13,7 @@ The project is structured into progressive modules:
 - **Module 1 (Complete):** Local PySpark Data Engineering foundations, strict schema enforcement, defect quarantine routing, referential integrity validation, financial Decimal precision, window functions, Spark SQL analytics, and partitioned Parquet storage.
 - **Module 2 (Complete & Deployment-Ready | Cloud Verification Pending):** Azure Cloud Ingestion Platform — Parameterized Azure Data Factory (ADF) master-child orchestration, Azure Data Lake Storage Gen2 (ADLS Gen2) with Hierarchical Namespace (HNS), Microsoft Entra System-Assigned Managed Identity, Azure RBAC, and dynamic landing path formatting.
 - **Module 3 (Complete & Local-Verified | Databricks Cloud Pending):** Azure Databricks, Delta Lake ACID Transactions, and Medallion Architecture (Landing ➔ Bronze ➔ Silver ➔ Gold), Delta MERGE, Time Travel, Schema Enforcement/Evolution, and Unity Catalog 3-Level Namespace.
+- **Module 4 (Complete & Local-Verified | Databricks Cloud Pending):** Advanced PySpark, Kimball Star Schema Dimensional Modeling (`dim_customer`, `dim_product`, `dim_store`, `dim_employee`, `dim_date`, `fact_sales`, `fact_returns`), SCD Type 1 & 2 processing with deterministic surrogate keys, Point-in-Time fact resolution, and enterprise data quality gate enforcement.
 
 ---
 
@@ -88,17 +89,36 @@ The project is structured into progressive modules:
 |             ├── gold_customer_spending_summary                                                     |
 |             └── gold_return_refund_performance                                                     |
 +----------------------------------------------------------------------------------------------------+
+|                             MODULE 4: DIMENSIONAL WAREHOUSE & QUALITY GATES                        |
+|                                                                                                    |
+|  [ Conformed Silver Delta Layer ] (retail_lakehouse.silver.*)                                      |
+|             │                                                                                      |
+|             ▼ (Deterministic Surrogate Key Generation & SCD Pipelines)                             |
+|  [ Dimensions: retail_lakehouse.warehouse ]                                                        |
+|             ├── dim_date      : Deterministic integer date_key (2020-2030) + unknown member (0)    |
+|             ├── dim_product   : SCD Type 1 in-place MERGE updates (stable product_key)             |
+|             ├── dim_customer  : SCD Type 2 history tracking (SHA-256 hash, validity intervals)     |
+|             ├── dim_store     : Type 1 store dimension                                             |
+|             └── dim_employee  : Type 1 employee dimension with store_key link                      |
+|             │                                                                                      |
+|             ▼ (Point-in-Time Surrogate Key Lookups & Decimal Financial Formulations)               |
+|  [ Facts: retail_lakehouse.warehouse ]                                                             |
+|             ├── fact_sales    : Grain = 1 row / order_item (PIT customer_key, exact financials)    |
+|             └── fact_returns  : Grain = 1 row / return event (sales lookup, refund metrics)        |
+|             │                                                                                      |
+|             ▼ (Enterprise Quality Gate Suite & Hard-Fail Pipeline Gate)                            |
+|  [ Quality Audit & Governance ]                                                                    |
+|             ├── Completeness, Uniqueness, Referential Integrity, SCD2 Invariants, Measure Validity |
+|             ├── Audit Table   : delta/warehouse/quality_audit (Structured check results)           |
+|             └── Reconciliation: 100% row-count & Decimal financial parity (Silver vs Warehouse)   |
++----------------------------------------------------------------------------------------------------+
 ```
 
 ### 🗺️ Cloud Roadmap
 - **Module 1:** Local PySpark processing and quality framework — **COMPLETE**
 - **Module 2:** Azure Cloud Ingestion Platform (ADF + ADLS Gen2) — **BUILD COMPLETE (Deployment-Ready)**
 - **Module 3:** Azure Databricks, Delta Lake ACID Transactions, and Medallion Architecture (Bronze -> Silver -> Gold) — **COMPLETE (Local-Verified)**
-- **Module 4:** Advanced PySpark, Dimensional Modeling (Star Schema / Kimball), and Slowly Changing Dimensions (SCD Type 1 & 2) — **NOT STARTED**
-- **Module 5:** Pipeline Orchestration with Databricks Workflows, Azure Monitor, and Logging — **NOT STARTED**
-- **Module 6:** CI/CD Automation with GitHub Actions, Automated PySpark Testing, and Serving Layers — **NOT STARTED**
-
-- **Module 4:** Advanced PySpark, Dimensional Modeling (Star Schema / Kimball), and Slowly Changing Dimensions (SCD Type 1 & 2) — **NOT STARTED**
+- **Module 4:** Advanced PySpark, Dimensional Modeling (Star Schema / Kimball), and Slowly Changing Dimensions (SCD Type 1 & 2) — **COMPLETE (Local-Verified)**
 - **Module 5:** Pipeline Orchestration with Databricks Workflows, Azure Monitor, and Logging — **NOT STARTED**
 - **Module 6:** CI/CD Automation with GitHub Actions, Automated PySpark Testing, and Serving Layers — **NOT STARTED**
 
