@@ -72,6 +72,7 @@ Every Delta table maintains a `_delta_log/` directory containing ordered, zero-p
 │  [ Bronze Layer: retail_lakehouse.bronze ]                                                                 │
 │  - Raw Delta tables preserving exact source fidelity (Standard JSON Lines reading)                         │
 │  - System lineage metadata attached: _source_file, _source_path, _ingestion_date, _adf_run_id, _ingested_ts │
+│  - File SHA-256 computed locally; cloud ingestion identity uses immutable source path / ADF run path       │
 │  - Zero data loss: Defective records are NOT dropped prematurely                                           │
 │               │                                                                                            │
 │               ▼ (Strong Typing, Deterministic Deduplication, Decimal Precision, Defect Routing)            │
@@ -153,18 +154,12 @@ Unity Catalog provides unified data governance across all Databricks workspaces:
   WITH (STORAGE CREDENTIAL cred_adls_lakehouse);
   ```
 
-### EXTERNAL TABLE REGISTRATION
-Delta tables written to external storage paths are registered into Unity Catalog using idempotent DDL:
-```sql
-CREATE TABLE IF NOT EXISTS retail_lakehouse.bronze.customers
-USING DELTA LOCATION 'abfss://lakehouse@stlakehousedev.dfs.core.windows.net/delta/bronze/customers';
+### LAYER-ISOLATED EXTERNAL TABLE REGISTRATION
+Delta tables written to external storage paths are registered into Unity Catalog in layer-specific order to ensure external table locations exist before registration:
 
-CREATE TABLE IF NOT EXISTS retail_lakehouse.silver.customers
-USING DELTA LOCATION 'abfss://lakehouse@stlakehousedev.dfs.core.windows.net/delta/silver/customers';
-
-CREATE TABLE IF NOT EXISTS retail_lakehouse.gold.gold_daily_sales_performance
-USING DELTA LOCATION 'abfss://lakehouse@stlakehousedev.dfs.core.windows.net/delta/gold/gold_daily_sales_performance';
-```
+- **Notebook 02 (Bronze):** Writes Bronze Delta tables $\rightarrow$ registers `retail_lakehouse.bronze.*` (8 tables).
+- **Notebook 03 (Silver):** Writes Silver & Quarantine Delta tables $\rightarrow$ registers `retail_lakehouse.silver.*` (8 conformed + 8 quarantine tables).
+- **Notebook 04 (Gold):** Writes Gold analytical Delta tables $\rightarrow$ registers `retail_lakehouse.gold.*` (6 KPI tables).
 
 ---
 
@@ -175,9 +170,9 @@ USING DELTA LOCATION 'abfss://lakehouse@stlakehousedev.dfs.core.windows.net/delt
 
 ### EXPECTED ANSWER
 > "In our architecture, Azure Data Factory lands external raw files into ADLS Gen2 under a dynamic immutable directory pattern partitioned by date and ADF RunId. In Databricks, an incremental discovery scanner detects newly landed files by checking against a Delta ingestion audit log (`bronze._ingestion_audit`), preventing duplicate ingestion on pipeline reruns.
-> 1. **Bronze Layer:** Files are ingested as raw strings (using standard JSON Lines parsing for payments) into Delta tables with system lineage metadata (`_source_file`, `_source_path`, `_ingestion_date`, `_adf_run_id`, `_ingested_timestamp`), preserving raw source fidelity without premature drops.
+> 1. **Bronze Layer:** Files are ingested as raw strings (using standard JSON Lines parsing for payments) into Delta tables with system lineage metadata (`_source_file`, `_source_path`, `_ingestion_date`, `_adf_run_id`, `_ingested_timestamp`), preserving raw source fidelity without premature drops. File hash is computed locally; cloud ingestion identity uses immutable source paths.
 > 2. **Silver Layer:** Bronze tables are transformed into conformed Delta tables with explicit typed schemas (using Decimal precision for financials), deterministic window-ranked deduplication (`_ingested_timestamp DESC, _row_hash ASC`), exact discount arithmetic, and referential anti-joins against validated dimension tables. Defective rows are isolated in `silver_quarantine_<dataset>` tables, strictly verified at runtime by a reconciliation validator (`bronze == valid + quarantine`).
-> 3. **Gold Layer:** Business-ready aggregate Delta tables (such as daily sales performance, customer lifetime spend, and store regional revenue) are computed strictly from Silver tables for reporting and analytics."
+> 3. **Gold Layer:** Business-ready aggregate Delta tables (such as daily sales performance, customer lifetime spend, and store regional revenue) are computed strictly from Silver tables for reporting and analytics. Tables are registered layer-by-layer in Unity Catalog only after their Delta storage paths are committed."
 
 ---
 

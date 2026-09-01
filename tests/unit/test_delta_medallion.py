@@ -13,7 +13,7 @@ Validates:
 9. Delta table history (DESCRIBE HISTORY) and Time Travel queries (VERSION AS OF).
 10. Schema enforcement failure and controlled schema evolution (mergeSchema = true).
 11. Delta table existence verification via DeltaTable.isDeltaTable.
-12. Unity Catalog registration SQL generation across the 3-level namespace.
+12. Layer-specific Unity Catalog registration SQL generation (Bronze, Silver, Gold isolation).
 13. Gold analytical KPI aggregations correctness.
 """
 
@@ -41,8 +41,11 @@ from src.delta.features import (
     query_time_travel_by_version,
 )
 from src.medallion.bronze import ingest_bronze_layer, load_bronze_table
-from src.medallion.catalog import generate_unity_catalog_registration_sql
+from src.medallion.catalog import (
+    generate_unity_catalog_registration_sql,
+)
 from src.medallion.discovery import (
+    LandingFileInfo,
     discover_landing_files,
     filter_uningested_files,
     parse_landing_path,
@@ -150,11 +153,12 @@ def test_landing_discovery_and_audit_tracking(spark, sample_landing_dir, tmp_pat
     discovered = discover_landing_files(spark, sample_landing_dir)
     assert len(discovered) == 8
 
-    # Verify discovery metadata extraction
+    # Verify discovery metadata extraction (local files have genuine 64-character SHA-256)
     cust_info = next(f for f in discovered if f.dataset_name == "customers")
     assert cust_info.ingestion_date == "2026-08-31"
     assert cust_info.adf_run_id == "test-run-001"
     assert cust_info.file_name == "customers.csv"
+    assert cust_info.file_sha256 is not None
     assert len(cust_info.file_sha256) == 64
 
     # Filter uningested (all 8 pending)
@@ -167,6 +171,27 @@ def test_landing_discovery_and_audit_tracking(spark, sample_landing_dir, tmp_pat
     # Filter again: remaining should be 4
     pending_after = filter_uningested_files(spark, discovered, audit_table_path)
     assert len(pending_after) == 4
+
+
+def test_cloud_file_discovery_nullable_sha(spark, tmp_path):
+    """Verify that cloud landing file metadata handles nullable file_sha256 safely."""
+    audit_table_path = tmp_path / "cloud_audit_log"
+    cloud_file = LandingFileInfo(
+        dataset_name="customers",
+        ingestion_date="2026-08-31",
+        adf_run_id="run-cloud-001",
+        file_name="customers.csv",
+        source_path="abfss://lakehouse@stlakehousedev.dfs.core.windows.net/landing/retail/customers/ingestion_date=2026-08-31/run_id=run-cloud-001/customers.csv",
+        file_sha256=None,  # Nullable for cloud files
+        format="csv",
+    )
+
+    record_ingested_files(spark, [cloud_file], audit_table_path)
+    audit_df = spark.read.format("delta").load(str(audit_table_path))
+    assert audit_df.count() == 1
+    row = audit_df.collect()[0]
+    assert row["source_path"] == cloud_file.source_path
+    assert row["file_sha256"] is None
 
 
 def test_landing_path_parsing_cloud_and_local():
@@ -404,21 +429,46 @@ def test_delta_table_existence_check(spark, tmp_path):
     assert DeltaTable.isDeltaTable(spark, str(non_delta)) is False
 
 
-def test_unity_catalog_registration_sql_generation():
-    """Test generation of Unity Catalog external table registration SQL."""
-    statements = generate_unity_catalog_registration_sql(
-        catalog_name="retail_lakehouse",
-        delta_root_uri="abfss://lakehouse@stlakehousedev.dfs.core.windows.net/delta",
-    )
-    assert len(statements) >= 32  # 1 catalog + 3 schemas + 8 bronze + 8 silver + 8 quarantine + 6 gold = 34 statements
+def test_unity_catalog_registration_sql_generation_layer_isolation():
+    """
+    Test layer-specific Unity Catalog registration SQL generation to ensure that
+    each layer generates statements strictly for its own Delta tables without
+    prematurely registering tables from later layers.
+    """
+    catalog = "retail_lakehouse"
+    root_uri = "abfss://lakehouse@stlakehousedev.dfs.core.windows.net/delta"
 
-    joined = "\n".join(statements)
-    assert "CREATE CATALOG IF NOT EXISTS retail_lakehouse;" in joined
-    assert "CREATE SCHEMA IF NOT EXISTS retail_lakehouse.bronze;" in joined
-    assert "CREATE TABLE IF NOT EXISTS retail_lakehouse.bronze.customers USING DELTA LOCATION 'abfss://lakehouse@stlakehousedev.dfs.core.windows.net/delta/bronze/customers';" in joined
-    assert "CREATE TABLE IF NOT EXISTS retail_lakehouse.silver.customers USING DELTA LOCATION 'abfss://lakehouse@stlakehousedev.dfs.core.windows.net/delta/silver/customers';" in joined
-    assert "CREATE TABLE IF NOT EXISTS retail_lakehouse.silver.quarantine_customers USING DELTA LOCATION 'abfss://lakehouse@stlakehousedev.dfs.core.windows.net/delta/silver/quarantine/customers';" in joined
-    assert "CREATE TABLE IF NOT EXISTS retail_lakehouse.gold.gold_daily_sales_performance USING DELTA LOCATION 'abfss://lakehouse@stlakehousedev.dfs.core.windows.net/delta/gold/gold_daily_sales_performance';" in joined
+    # 1. Full registration (all layers)
+    all_stmts = generate_unity_catalog_registration_sql(catalog, root_uri)
+    assert len(all_stmts) == 34  # 1 catalog + (1 schema + 8 bronze) + (1 schema + 16 silver/quar) + (1 schema + 6 gold) = 34
+
+    # 2. Bronze only
+    bronze_stmts = generate_unity_catalog_registration_sql(catalog, root_uri, layers=["bronze"])
+    bronze_sql = "\n".join(bronze_stmts)
+    assert "CREATE SCHEMA IF NOT EXISTS retail_lakehouse.bronze;" in bronze_sql
+    assert "CREATE TABLE IF NOT EXISTS retail_lakehouse.bronze.customers" in bronze_sql
+    assert "retail_lakehouse.silver" not in bronze_sql
+    assert "retail_lakehouse.gold" not in bronze_sql
+    assert len(bronze_stmts) == 10  # 1 catalog + 1 schema + 8 tables
+
+    # 3. Silver only
+    silver_stmts = generate_unity_catalog_registration_sql(catalog, root_uri, layers=["silver"])
+    silver_sql = "\n".join(silver_stmts)
+    assert "CREATE SCHEMA IF NOT EXISTS retail_lakehouse.silver;" in silver_sql
+    assert "CREATE TABLE IF NOT EXISTS retail_lakehouse.silver.customers" in silver_sql
+    assert "CREATE TABLE IF NOT EXISTS retail_lakehouse.silver.quarantine_customers" in silver_sql
+    assert "retail_lakehouse.bronze" not in silver_sql
+    assert "retail_lakehouse.gold" not in silver_sql
+    assert len(silver_stmts) == 18  # 1 catalog + 1 schema + 8 silver + 8 quarantine
+
+    # 4. Gold only
+    gold_stmts = generate_unity_catalog_registration_sql(catalog, root_uri, layers=["gold"])
+    gold_sql = "\n".join(gold_stmts)
+    assert "CREATE SCHEMA IF NOT EXISTS retail_lakehouse.gold;" in gold_sql
+    assert "CREATE TABLE IF NOT EXISTS retail_lakehouse.gold.gold_daily_sales_performance" in gold_sql
+    assert "retail_lakehouse.bronze" not in gold_sql
+    assert "retail_lakehouse.silver" not in gold_sql
+    assert len(gold_stmts) == 8  # 1 catalog + 1 schema + 6 tables
 
 
 def test_delta_time_travel(spark, tmp_path):

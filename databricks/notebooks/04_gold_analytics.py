@@ -31,12 +31,13 @@ silver_root = f"{storage_base}/delta/silver"
 gold_root = f"{storage_base}/delta/gold"
 
 spark.sql(f"USE CATALOG {catalog_name}")
+spark.sql("CREATE SCHEMA IF NOT EXISTS gold")
 spark.sql("USE SCHEMA gold")
 
 # COMMAND ----------
 
 # DBTITLE 1,Build Gold Analytical Tables & Register in Unity Catalog
-from src.medallion.catalog import register_medallion_tables_in_catalog
+from src.medallion.catalog import register_gold_tables
 from src.medallion.gold import process_gold_layer
 
 gold_counts = process_gold_layer(
@@ -48,8 +49,8 @@ gold_counts = process_gold_layer(
 for table_name, count in gold_counts.items():
     print(f"Generated Gold Table: {table_name:<35} | {count:,} rows")
 
-# Register external Delta tables into Unity Catalog
-register_medallion_tables_in_catalog(spark, catalog_name, f"{storage_base}/delta")
+# Register ONLY Gold external Delta tables into Unity Catalog
+register_gold_tables(spark, catalog_name, f"{storage_base}/delta")
 
 # COMMAND ----------
 

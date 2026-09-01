@@ -31,13 +31,14 @@ landing_root = f"{storage_base}/landing"
 bronze_root = f"{storage_base}/delta/bronze"
 
 spark.sql(f"USE CATALOG {catalog_name}")
+spark.sql("CREATE SCHEMA IF NOT EXISTS bronze")
 spark.sql("USE SCHEMA bronze")
 
 # COMMAND ----------
 
 # DBTITLE 1,Import Medallion Ingestion Logic & Ingest Bronze Layer
 from src.medallion.bronze import ingest_bronze_layer
-from src.medallion.catalog import register_medallion_tables_in_catalog
+from src.medallion.catalog import register_bronze_tables
 
 counts = ingest_bronze_layer(
     spark=spark,
@@ -49,8 +50,8 @@ counts = ingest_bronze_layer(
 for dataset_name, row_count in counts.items():
     print(f"Ingested {dataset_name}: +{row_count:,} rows")
 
-# Register external Delta tables into Unity Catalog
-register_medallion_tables_in_catalog(spark, catalog_name, f"{storage_base}/delta")
+# Register ONLY Bronze external Delta tables into Unity Catalog
+register_bronze_tables(spark, catalog_name, f"{storage_base}/delta")
 
 # COMMAND ----------
 

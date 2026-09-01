@@ -33,12 +33,13 @@ silver_root = f"{storage_base}/delta/silver"
 quarantine_root = f"{storage_base}/delta/silver/quarantine"
 
 spark.sql(f"USE CATALOG {catalog_name}")
+spark.sql("CREATE SCHEMA IF NOT EXISTS silver")
 spark.sql("USE SCHEMA silver")
 
 # COMMAND ----------
 
 # DBTITLE 1,Execute Silver Transformations
-from src.medallion.catalog import register_medallion_tables_in_catalog
+from src.medallion.catalog import register_silver_tables
 from src.medallion.silver import process_silver_layer
 
 metrics = process_silver_layer(
@@ -55,8 +56,8 @@ for ds, m in metrics.items():
     print(f"{ds:<15} | {m['bronze']:<10} | {m['silver_valid']:<12} | {m['quarantine']:<10}")
 print("=" * 60)
 
-# Register external Delta tables into Unity Catalog
-register_medallion_tables_in_catalog(spark, catalog_name, f"{storage_base}/delta")
+# Register ONLY Silver and Quarantine external Delta tables into Unity Catalog
+register_silver_tables(spark, catalog_name, f"{storage_base}/delta")
 
 # COMMAND ----------
 

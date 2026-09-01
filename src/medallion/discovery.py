@@ -39,7 +39,7 @@ INGESTION_AUDIT_SCHEMA = StructType([
     StructField("ingestion_date", StringType(), False),
     StructField("adf_run_id", StringType(), False),
     StructField("file_name", StringType(), False),
-    StructField("file_sha256", StringType(), False),
+    StructField("file_sha256", StringType(), True),  # Nullable: computed locally, None for cloud paths
     StructField("status", StringType(), False),
     StructField("ingested_at", TimestampType(), False),
 ])
@@ -57,7 +57,7 @@ class LandingFileInfo:
     adf_run_id: str
     file_name: str
     source_path: str
-    file_sha256: str
+    file_sha256: str | None  # 64-character SHA-256 for local files, None for cloud paths where remote calculation is skipped
     format: str  # 'csv' or 'json'
 
 
@@ -169,7 +169,7 @@ def discover_landing_files(
                                 adf_run_id=run_id,
                                 file_name=filename,
                                 source_path=file_uri,
-                                file_sha256="cloud-path-verified",
+                                file_sha256=None,  # Nullable: cloud ingestion identity uses immutable source path
                                 format=fmt,
                             )
                         )
