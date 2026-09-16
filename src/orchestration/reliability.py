@@ -8,10 +8,12 @@ from deterministic data-quality and configuration errors.
 from __future__ import annotations
 
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
+from src.medallion.discovery import LandingDiscoveryError, LandingPathError
 from src.medallion.silver import ReconciliationError
 from src.modeling.quality import WarehouseQualityGateError
 from src.modeling.scd_type2 import SCD2TemporalOrderError
@@ -20,19 +22,54 @@ from src.orchestration.models import FailureClassification
 logger = logging.getLogger(__name__)
 
 
+class QuarantineThresholdExceededError(RuntimeError):
+    """Raised when the Silver layer quarantine rate exceeds the configured operational threshold."""
+    pass
+
+
+def sanitize_failure_message(message: str) -> str:
+    """Sanitize secrets, passwords, tokens, SAS keys, and file:/// links from error messages."""
+    sanitized = re.sub(
+        r"(sig|SharedAccessSignature|password|token|secret|account_key)=([^;&\s]+)",
+        r"\1=REDACTED",
+        message,
+        flags=re.IGNORECASE,
+    )
+    sanitized = re.sub(r"dapi[a-f0-9]{32}", "dapi[REDACTED]", sanitized)
+    sanitized = re.sub(r"eyJ[a-zA-Z0-9_\-]{20,}\.[a-zA-Z0-9_\-]{20,}", "[REDACTED_JWT]", sanitized)
+    return sanitized
+
+
 def classify_failure(exc: Exception) -> FailureClassification:
     """
     Classify an exception into an operational failure category.
 
     Key Architectural Rule:
     - DATA_QUALITY: Deterministic failures (e.g. Broken reconciliation, failed quality gates,
-      out-of-order temporal intervals). Retrying with unchanged inputs will NOT fix the problem.
+      quarantine threshold exceeded, out-of-order temporal intervals). Retrying with unchanged inputs
+      will NOT fix the problem.
     - TRANSIENT: Temporary infrastructure/network/storage issues. Retrying may succeed.
-    - CONFIGURATION: Missing parameters or misconfigured paths.
-    - DEPENDENCY: Upstream task failure cascade.
+    - CONFIGURATION: Missing parameters or malformed landing contract paths.
+    - DEPENDENCY: Upstream task failure cascade or missing cloud dependencies.
     """
-    if isinstance(exc, (WarehouseQualityGateError, ReconciliationError, SCD2TemporalOrderError)):
+    if isinstance(
+        exc,
+        (
+            WarehouseQualityGateError,
+            ReconciliationError,
+            SCD2TemporalOrderError,
+            QuarantineThresholdExceededError,
+        ),
+    ):
         return FailureClassification.DATA_QUALITY
+
+    if isinstance(exc, LandingPathError):
+        return FailureClassification.CONFIGURATION
+
+    if isinstance(exc, LandingDiscoveryError):
+        if exc.__cause__ and isinstance(exc.__cause__, (TimeoutError, ConnectionError, OSError)):
+            return FailureClassification.TRANSIENT
+        return FailureClassification.DEPENDENCY
 
     if isinstance(exc, (FileNotFoundError, TimeoutError, ConnectionError, IOError, OSError)):
         return FailureClassification.TRANSIENT
@@ -58,6 +95,10 @@ class RetryPolicy:
         """Determine if an exception is eligible for retry under this policy."""
         classification = classify_failure(exc)
         return classification in self.retryable_classifications
+
+    def should_retry(self, exc: Exception, attempt: int = 0) -> bool:
+        """Determine if an exception should be retried given current attempt count."""
+        return self.is_retryable(exc) and attempt < self.max_retries
 
 
 def execute_with_retry(

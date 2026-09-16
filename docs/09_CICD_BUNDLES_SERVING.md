@@ -1,8 +1,8 @@
-# Module 6: Production CI/CD, Declarative Automation Bundles & Governed SQL Serving
+# Module 6: CI/CD, Databricks Bundles & Governed SQL Serving
 
 ## 1. Executive Summary & Architectural Overview
 
-Module 6 operationalizes the omnichannel retail data platform with enterprise-grade release automation, zero-secret continuous deployment, and a governed analytical serving layer.
+Module 6 operationalizes the omnichannel retail data platform with release automation, zero-secret continuous deployment, and a governed analytical serving layer.
 
 ```
 ┌────────────────────────────────────────────────────────────────────────┐

@@ -45,7 +45,10 @@ from src.medallion.catalog import (
     generate_unity_catalog_registration_sql,
 )
 from src.medallion.discovery import (
+    LandingDiscoveryError,
     LandingFileInfo,
+    LandingPathError,
+    compute_ingestion_id,
     discover_landing_files,
     filter_uningested_files,
     parse_landing_path,
@@ -225,6 +228,7 @@ def test_bronze_layer_ingestion(spark, sample_landing_dir, tmp_path):
         assert "_ingestion_date" in df.columns
         assert "_adf_run_id" in df.columns
         assert "_ingested_timestamp" in df.columns
+        assert "_ingestion_id" in df.columns
 
     # Rerun should be idempotent and ingest 0 new rows
     rerun_counts = ingest_bronze_layer(spark, sample_landing_dir, bronze_root)
@@ -532,3 +536,212 @@ def test_gold_layer_aggregations(spark, sample_landing_dir, tmp_path):
     assert "net_sales" in daily_df.columns
     assert "gross_profit" in daily_df.columns
     assert "returns_count" in daily_df.columns
+
+
+def test_cloud_discovery_filesystem_exception_raises_landing_discovery_error(spark):
+    """
+    Mandatory Test 1: Cloud discovery filesystem/auth/config failure raises LandingDiscoveryError
+    with chained exception and sanitized message (does NOT swallow error).
+    """
+    bad_cloud_uri = "abfss://nonexistent_container@badstorageaccount.dfs.core.windows.net/landing"
+    with pytest.raises(LandingDiscoveryError) as exc_info:
+        discover_landing_files(spark, bad_cloud_uri)
+
+    assert "Cloud landing discovery failed" in str(exc_info.value) or "does not exist" in str(exc_info.value)
+    assert exc_info.value.__cause__ is not None or "does not exist" in str(exc_info.value)
+
+
+def test_valid_empty_cloud_directory_returns_empty_list(spark, tmp_path, monkeypatch):
+    """
+    Mandatory Test 2: Valid existing cloud directory with no files returns empty list [].
+    """
+    cloud_uri = "abfss://lakehouse@stlakehouse.dfs.core.windows.net/empty_landing"
+
+    class MockHadoopPath:
+        pass
+
+    class MockFileSystem:
+        def exists(self, p):
+            return True
+
+        def listStatus(self, p):
+            return []
+
+    monkeypatch.setattr(
+        "src.medallion.discovery._get_cloud_filesystem_and_path",
+        lambda s, r: (MockFileSystem(), MockHadoopPath()),
+    )
+    discovered = discover_landing_files(spark, cloud_uri)
+    assert discovered == []
+
+
+def test_malformed_cloud_path_raises_landing_path_error():
+    """
+    Mandatory Test 3: Malformed cloud landing paths raise LandingPathError in strict mode.
+    Tests invalid date, missing run_id, missing dataset, and flat malformed cloud path.
+    """
+    # 1. Flat malformed cloud path
+    with pytest.raises(LandingPathError) as exc1:
+        parse_landing_path("abfss://lakehouse@st.dfs.core.windows.net/landing/customers.csv", strict=True)
+    assert "Malformed landing path violates cloud contract" in str(exc1.value)
+
+    # 2. Invalid calendar date
+    with pytest.raises(LandingPathError) as exc2:
+        parse_landing_path(
+            "abfss://lakehouse@st.dfs.core.windows.net/landing/retail/customers/ingestion_date=2026-02-31/run_id=r1/customers.csv",
+            strict=True,
+        )
+    assert "invalid calendar date" in str(exc2.value)
+
+    # 3. Missing run_id (empty string after run_id=)
+    with pytest.raises(LandingPathError) as exc3:
+        parse_landing_path(
+            "abfss://lakehouse@st.dfs.core.windows.net/landing/retail/customers/ingestion_date=2026-08-31/run_id=/customers.csv",
+            strict=True,
+        )
+    assert "empty dataset, run_id, or filename" in str(exc3.value) or "Malformed" in str(exc3.value)
+
+    # 4. Missing dataset
+    with pytest.raises(LandingPathError) as exc4:
+        parse_landing_path(
+            "abfss://lakehouse@st.dfs.core.windows.net/landing/retail//ingestion_date=2026-08-31/run_id=r1/customers.csv",
+            strict=True,
+        )
+    assert "empty dataset, run_id, or filename" in str(exc4.value) or "Malformed" in str(exc4.value)
+
+
+def test_strict_path_extracts_correct_metadata():
+    """
+    Mandatory Test 4: Strict path parsing extracts accurate lineage metadata.
+    """
+    path = "abfss://lakehouse@st.dfs.core.windows.net/landing/retail/order_items/ingestion_date=2026-08-31/run_id=adf-batch-42/order_items.csv"
+    ds, dt, run_id, fname, fmt = parse_landing_path(path, strict=True)
+    assert ds == "order_items"
+    assert dt == "2026-08-31"
+    assert run_id == "adf-batch-42"
+    assert fname == "order_items.csv"
+    assert fmt == "csv"
+
+
+def test_deterministic_ingestion_id():
+    """
+    Mandatory Test 5: Deterministic _ingestion_id derived via SHA-256.
+    """
+    id1 = compute_ingestion_id("customers", "landing/retail/customers/ingestion_date=2026-08-31/run_id=r1/customers.csv", "sha123")
+    id2 = compute_ingestion_id("customers", "landing/retail/customers/ingestion_date=2026-08-31/run_id=r1/customers.csv", "sha123")
+    id3 = compute_ingestion_id("customers", "landing/retail/customers/ingestion_date=2026-08-31/run_id=r2/customers.csv", "sha123")
+
+    assert id1 == id2, "Identical inputs must yield identical _ingestion_id"
+    assert id1 != id3, "Different source path must yield different _ingestion_id"
+    assert len(id1) == 64
+
+
+def test_strict_cloud_path_success():
+    """
+    Mandatory Test 1: Strict cloud path parsing succeeds on compliant ABFSS path.
+    """
+    uri = "abfss://lakehouse@stlakehousedev.dfs.core.windows.net/landing/retail/customers/ingestion_date=2026-08-31/run_id=adf-run-001/customers.csv"
+    ds, dt, run_id, fname, fmt = parse_landing_path(uri, strict=True)
+    assert ds == "customers"
+    assert dt == "2026-08-31"
+    assert run_id == "adf-run-001"
+    assert fname == "customers.csv"
+    assert fmt == "csv"
+
+
+def test_same_source_produces_same_ingestion_id():
+    """
+    Mandatory Test 6: Same source path and content always produces identical ingestion_id.
+    """
+    id_a = compute_ingestion_id("products", "landing/retail/products/ingestion_date=2026-08-31/run_id=r1/products.csv", "hash_abc")
+    id_b = compute_ingestion_id("products", "landing/retail/products/ingestion_date=2026-08-31/run_id=r1/products.csv", "hash_abc")
+    assert id_a == id_b
+
+
+def test_different_source_produces_different_ingestion_id():
+    """
+    Mandatory Test 7: Different source identity produces different ingestion_id.
+    """
+    id_a = compute_ingestion_id("products", "landing/retail/products/ingestion_date=2026-08-31/run_id=r1/products.csv", "hash_abc")
+    id_b = compute_ingestion_id("products", "landing/retail/products/ingestion_date=2026-08-31/run_id=r2/products.csv", "hash_abc")
+    id_c = compute_ingestion_id("customers", "landing/retail/products/ingestion_date=2026-08-31/run_id=r1/products.csv", "hash_abc")
+    assert id_a != id_b
+    assert id_a != id_c
+
+
+def test_bronze_normal_rerun_does_not_duplicate(spark, sample_landing_dir, tmp_path):
+    """
+    Mandatory Test 6: Normal rerun with unchanged files produces 0 new rows and leaves table row count unchanged.
+    """
+    bronze_root = tmp_path / "bronze_normal_rerun"
+    counts1 = ingest_bronze_layer(spark, sample_landing_dir, bronze_root, datasets=["products"])
+    initial_count = load_bronze_table(spark, bronze_root, "products").count()
+    assert counts1["products"] == initial_count
+
+    counts2 = ingest_bronze_layer(spark, sample_landing_dir, bronze_root, datasets=["products"])
+    assert counts2["products"] == 0
+    after_rerun_count = load_bronze_table(spark, bronze_root, "products").count()
+    assert after_rerun_count == initial_count
+
+
+def test_bronze_existing_audit_missing_recovery_does_not_duplicate(spark, sample_landing_dir, tmp_path):
+    """
+    Mandatory Test 7: Crash Recovery.
+    Bronze rows for ingestion_id exist, but audit entry is intentionally missing.
+    Rerun: Bronze rows do NOT double, audit entry is repaired, 0 newly inserted rows reported.
+    """
+    import shutil
+
+    bronze_root = tmp_path / "bronze_crash_rec"
+    counts = ingest_bronze_layer(spark, sample_landing_dir, bronze_root, datasets=["customers"])
+    initial_count = load_bronze_table(spark, bronze_root, "customers").count()
+    assert counts["customers"] == initial_count
+    assert initial_count > 0
+
+    # Intentionally delete the _ingestion_audit Delta table to simulate a crash
+    # that occurred between Bronze Delta write and audit append
+    audit_table_path = bronze_root / "_ingestion_audit"
+    shutil.rmtree(audit_table_path)
+    assert not audit_table_path.exists()
+
+    # Rerun ingestion with missing audit
+    rerun_counts = ingest_bronze_layer(spark, sample_landing_dir, bronze_root, datasets=["customers"])
+
+    # 1. Newly inserted rows must be 0
+    assert rerun_counts["customers"] == 0
+
+    # 2. Bronze rows must NOT double
+    recovered_count = load_bronze_table(spark, bronze_root, "customers").count()
+    assert recovered_count == initial_count
+
+    # 3. Audit log must be repaired
+    assert DeltaTable.isDeltaTable(spark, str(audit_table_path))
+    audit_df = spark.read.format("delta").load(str(audit_table_path))
+    assert audit_df.count() >= 1
+    assert audit_df.filter(audit_df.dataset_name == "customers").count() >= 1
+
+
+def test_audit_merge_repairs_missing_audit(spark, tmp_path):
+    """
+    Mandatory Test 8: Audit table uses Delta MERGE keyed on ingestion_id to prevent duplicates.
+    """
+    audit_path = tmp_path / "audit_merge_test"
+    file_info = LandingFileInfo(
+        dataset_name="stores",
+        ingestion_date="2026-08-31",
+        adf_run_id="run-001",
+        file_name="stores.csv",
+        source_path="landing/retail/stores/ingestion_date=2026-08-31/run_id=run-001/stores.csv",
+        file_sha256="abc123",
+        format="csv",
+    )
+
+    # First write
+    record_ingested_files(spark, [file_info], audit_path, status="SUCCESS")
+    audit_df = spark.read.format("delta").load(str(audit_path))
+    assert audit_df.count() == 1
+
+    # Second write for same file_info (with repair or re-record)
+    record_ingested_files(spark, [file_info], audit_path, status="SUCCESS")
+    audit_df2 = spark.read.format("delta").load(str(audit_path))
+    assert audit_df2.count() == 1, "Delta MERGE must update or preserve existing record without adding duplicate"

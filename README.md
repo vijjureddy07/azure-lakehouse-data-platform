@@ -8,18 +8,43 @@
 
 ## 📌 Executive Summary
 
-This repository implements an end-to-end, enterprise-grade cloud data platform for an omnichannel retail enterprise. It demonstrates modern lakehouse engineering across six production modules:
+This repository implements an end-to-end cloud data platform for an omnichannel retail enterprise. It demonstrates modern lakehouse engineering across six core modules:
 
 1. **Module 1 (Local PySpark & Quality Framework):** Explicit StructType schemas, Decimal precision, defect quarantine routing, referential anti-joins, window functions, and partitioned Parquet storage.
 2. **Module 2 (Azure Cloud Ingestion Platform):** Metadata-driven Azure Data Factory (ADF) master-child pipelines, ADLS Gen2 with Hierarchical Namespace (HNS), Entra System-Assigned Managed Identity, Azure RBAC, and immutable landing paths.
 3. **Module 3 (Databricks Delta Lake Medallion Architecture):** Delta transaction log ACID transactions, time travel, schema enforcement/evolution, Medallion Bronze/Silver/Gold layers, idempotent Delta MERGE, and Unity Catalog 3-level namespace.
 4. **Module 4 (Kimball Dimensional Modeling & SCD):** Enterprise star schema (`dim_customer` SCD2, `dim_product` SCD1, `dim_store`, `dim_employee`, `dim_date`, `fact_sales`, `fact_returns`), deterministic surrogate keys, point-in-time fact resolution, and enterprise data quality gates.
-5. **Module 5 (Lakeflow Jobs Orchestration & Operational Auditing):** Multi-task DAG, Task Values cross-task telemetry, condition tasks, two-tier retry taxonomy (in-process transient vs fail-fast data quality), idempotent repair runs, and durable `JobRunAudit` Delta ledger.
-6. **Module 6 (Production CI/CD, Bundles & Governed SQL Serving):** Python wheel packaging (`.whl`), Declarative Automation Bundles (IaC for `dev`/`prod`), GitHub Actions CI (Ruff, 107 Pytests, wheel smoke tests), zero-secret GitHub OIDC deployment, Serverless Databricks SQL Warehouse, and 8 governed Unity Catalog serving views.
+5. **Module 5 (Lakeflow Jobs Orchestration & Operational Auditing):** Multi-task DAG, Task Values cross-task telemetry, hard quarantine quality gate, two-tier retry taxonomy (in-process transient vs fail-fast data quality), idempotent repair runs, and durable `JobRunAudit` Delta ledger.
+6. **Module 6 (CI/CD, Databricks Bundles & Governed SQL Serving):** Python wheel packaging (`.whl`), Declarative Automation Bundles (IaC for `dev`/`prod`), GitHub Actions CI (Ruff, Pytests, wheel smoke tests), zero-secret GitHub OIDC deployment, Serverless Databricks SQL Warehouse, and 8 governed Unity Catalog serving views.
+
+### Implemented Core Concepts
+`Python` • `SQL` • `PySpark` • `Spark` • `ADF` • `ADLS Gen2` • `Databricks` • `Delta Lake` • `Medallion` • `data quality` • `SCD1` • `SCD2` • `star schema` • `Lakeflow Jobs` • `CI/CD` • `Databricks bundles` • `SQL serving`
 
 ---
 
-## 🏛️ End-to-End Enterprise Architecture
+## 🏛️ End-to-End Architecture
+
+```
+GitHub Source
+      ↓
+     ADF
+      ↓
+  ADLS Gen2
+      ↓
+Databricks / PySpark
+      ↓
+  Bronze Delta
+      ↓
+Silver + Quarantine
+      ↓
+     Gold
+      ↓
+Dimensional Warehouse
+      ↓
+  Lakeflow Jobs
+      ↓
+Governed SQL Serving
+```
 
 ```
                                       DATA PLATFORM ARCHITECTURE
@@ -41,26 +66,25 @@ This repository implements an end-to-end, enterprise-grade cloud data platform f
              │
              ├── 1. validate_landing_batch ────► Verifies 8 required datasets for batch (native retries: 0)
              │
-             ├── 2. bronze_ingestion ──────────► retail_lakehouse.bronze.* (Raw strings + Lineage metadata)
+             ├── 2. bronze_ingestion ──────────► retail_lakehouse.bronze.* (Deterministic _ingestion_id)
              │
-             ├── 3. silver_transformation ─────► retail_lakehouse.silver.* (Conformed Delta Tables)
+             ├── 3. silver_transformation ─────► retail_lakehouse.silver.* (Hard Quarantine Gate)
              │                                   ├── Valid Records ──► Conformed tables
-             │                                   └── Bad Records  ───► silver_quarantine_<dataset>
-             │                                   └── Invariant    ───► Bronze == Valid + Quarantine
+             │                                   ├── Bad Records  ───► silver_quarantine_<dataset>
+             │                                   ├── Invariant    ───► Bronze == Valid + Quarantine
+             │                                   └── Hard Gate    ───► Halts if quarantine_rate > threshold
              │
-             ├── 4. check_quarantine_threshold ► (Lakeflow condition_task) ──► quality_attention branch
+             ├── 4A. gold_analytics ───────────► retail_lakehouse.gold.* (6 Business KPI Aggregations)
              │
-             ├── 5A. gold_analytics ───────────► retail_lakehouse.gold.* (6 Business KPI Aggregations)
-             │
-             ├── 5B. dimensional_warehouse ────► retail_lakehouse.warehouse.* (Kimball Star Schema)
+             ├── 4B. dimensional_warehouse ────► retail_lakehouse.warehouse.* (Kimball Star Schema)
              │                                   ├── Dimensions: dim_customer (SCD2), dim_product (SCD1),
              │                                   │               dim_store, dim_employee, dim_date
              │                                   ├── Facts:      fact_sales (PIT customer_key), fact_returns
              │                                   └── Quality:    Enterprise Data Quality Suite (EDQ)
              │
-             ├── 6. final_quality_gate ────────► High-level operational health verification
+             ├── 5. final_quality_gate ────────► High-level operational health verification
              │
-             └── 7. publish_run_summary ───────► delta/operations/job_run_audit (run_if: ALL_DONE)
+             └── 6. publish_run_summary ───────► delta/operations/job_run_audit (run_if: ALL_DONE)
                          │
                          ▼
   [ Unity Catalog Metastore: retail_lakehouse ] (3-Level Namespace Governance)
@@ -74,14 +98,14 @@ This repository implements an end-to-end, enterprise-grade cloud data platform f
   [ Serverless Databricks SQL Warehouse ] (PRO SKU, 2X-Small, Auto-Stop: 10 mins)
              │
              ▼
-  [ BI Dashboards / SQL Analysts / Future Power BI ]
+  [ BI Dashboards / SQL Analysts / Downstream Consumption ]
 
   ====================================================================================================
                                       RELEASE AUTOMATION (CI / CD)
   ====================================================================================================
   [ Developer PR / Push ] ──► GitHub Actions CI (.github/workflows/ci.yml)
                                  ├── 1. Ruff Static Analysis (0 errors)
-                                 ├── 2. Full Pytest Suite (107/107 tests passed)
+                                 ├── 2. Full Pytest Suite (128 tests passed)
                                  ├── 3. Build & Smoke Test Python Wheel (.whl)
                                  └── 4. Bundle & Serving Contract Validation
                                  
@@ -202,11 +226,11 @@ python -m src.pipelines.dimensional_warehouse_pipeline --scale small
 | :--- | :--- | :--- | :--- |
 | `test_schemas.py` & `test_quality_rules.py` | Explicit StructTypes, Decimal precision, anti-join quarantine routing | 15 | 🟢 PASSED |
 | `test_adf_artifacts.py` | ADF JSON payloads, Managed Identity, secret scanning, verifier exit codes | 14 | 🟢 PASSED |
-| `test_delta_medallion.py` | Delta transaction log, time travel, schema evolution, MERGE upserts, Gold KPIs | 18 | 🟢 PASSED |
-| `test_dimensional_modeling.py` | Surrogate keys, `dim_date`, SCD1 MERGE, SCD2 intervals, PIT joins, EDQ gates | 19 | 🟢 PASSED |
-| `test_orchestration.py` & `test_orchestration_workflow.py` | Lakeflow DAG, condition tasks, retry taxonomy, repair idempotency, run audit | 22 | 🟢 PASSED |
+| `test_delta_medallion.py` & pipeline | Strict cloud path, Delta logs, time travel, schema evolution, MERGE upserts, Gold KPIs | 29 | 🟢 PASSED |
+| `test_dimensional_modeling.py` & CLI | Surrogate keys, `dim_date`, SCD1 MERGE, SCD2 intervals, recovery, PIT joins, EDQ gates | 24 | 🟢 PASSED |
+| `test_orchestration.py` & workflow | Lakeflow DAG, operational audit MERGE, quarantine hard gate, retry taxonomy, ALL_DONE | 27 | 🟢 PASSED |
 | `test_module6_cicd_bundle_serving.py` | Bundle config, SQL warehouse, serving views, fact grain, catalog parameterization, taskValues | 19 | 🟢 PASSED |
-| **Total Test Suite** | **Comprehensive Full Platform Coverage** | **107 / 107** | 🟢 **100% PASS** |
+| **Total Test Suite** | **Comprehensive Full Platform Coverage** | **128 / 128** | 🟢 **100% PASS** |
 
 ---
 
@@ -231,9 +255,13 @@ python -m src.pipelines.dimensional_warehouse_pipeline --scale small
 
 ## 🔒 Cloud Verification & Learning Status
 
-- **Local Implementation & Automated Testing:** 🟢 **100% COMPLETE & VERIFIED** (107/107 tests passing, 0 Ruff errors)
-- **Static Resource Contract Tests:** 🟢 **VERIFIED** (107/107 unit & integration tests pass across Modules 1–6)
-- **GitHub Actions CI Pipeline:** 🟢 **VERIFIED / SUCCESS** (Automated CI running clean on `main` for commit `1ffcd5a`)
-- **Authenticated Databricks Bundle Validation:** ⏳ **PENDING** (Requires live Databricks CLI authentication and workspace connection)
-- **Cloud Deployment Verification:** ⏳ **PENDING** (Live deployment requires active Azure subscription and Databricks workspace credentials)
+- **LOCAL / CI VERIFIED:** 🟢 **100% COMPLETE & VERIFIED**
+  - Full local test suite passing (128/128 tests passing, 0 Ruff errors)
+  - Static code analysis with Ruff passing (0 lint errors)
+  - Python wheel build and clean smoke test installation verified
+  - GitHub Actions CI workflow automated and green
+- **AZURE CLOUD VERIFIED:** ⏳ **CLOUD VERIFICATION PENDING**
+  - Factual status: No live ADF execution, Databricks job run ID, or live Unity Catalog execution claimed without active enterprise Azure subscription proof.
+  - Infrastructure-as-Code (Bicep/ARM), ADF pipelines, Databricks Asset Bundles, and OIDC workflows are deployment-ready and statically validated.
 - **Learning Status:** ⏳ **NOT STUDIED / PENDING** (Maintained per workflow rule: `BUILD FIRST -> DOCUMENT EVERYTHING -> LEARN LATER`)
+- **Project Freeze:** ❄️ **FROZEN AFTER THIS QA PASS**

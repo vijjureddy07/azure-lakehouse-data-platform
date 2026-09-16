@@ -27,8 +27,10 @@ import pytest
 
 from src.medallion.bronze import ingest_bronze_layer
 from src.medallion.catalog import register_operations_tables
+from src.medallion.discovery import LandingDiscoveryError, LandingPathError
 from src.medallion.silver import ReconciliationError
 from src.modeling.quality import WarehouseQualityGateError
+from src.modeling.scd_type2 import SCD2TemporalOrderError
 from src.orchestration.audit import (
     format_run_summary,
     persist_job_run_audit,
@@ -39,7 +41,9 @@ from src.orchestration.models import (
     RunContext,
     TaskValueStore,
 )
+from src.orchestration.orchestrator import LakeflowLocalOrchestrator, TaskState
 from src.orchestration.reliability import (
+    QuarantineThresholdExceededError,
     RetryPolicy,
     classify_failure,
     execute_with_retry,
@@ -48,6 +52,7 @@ from src.orchestration.tasks.publish_run_summary import (
     resolve_failed_task_from_states,
     resolve_failed_task_from_task_values,
 )
+from src.orchestration.tasks.run_silver import execute_silver_task
 from src.orchestration.tasks.validate_landing import (
     LandingBatchIncompleteError,
     execute_validate_landing_task,
@@ -67,14 +72,12 @@ def test_lakeflow_job_yaml_structure_and_parameters():
     parsed = validate_lakeflow_job_yaml(YAML_JOB_PATH)
     assert parsed is not None
     assert parsed["job_name"] == "Retail Lakehouse Batch Pipeline"
-    assert parsed["task_count"] == 9
+    assert parsed["task_count"] == 7
 
     expected_tasks = {
         "validate_landing_batch",
         "bronze_ingestion",
         "silver_transformation",
-        "check_quarantine_threshold",
-        "quality_attention",
         "gold_analytics",
         "dimensional_warehouse",
         "final_quality_gate",
@@ -133,12 +136,6 @@ def test_lakeflow_job_yaml_dependencies_and_run_if():
     assert tasks_by_key["bronze_ingestion"]["depends_on"][0]["task_key"] == "validate_landing_batch"
     # silver depends on bronze
     assert tasks_by_key["silver_transformation"]["depends_on"][0]["task_key"] == "bronze_ingestion"
-    # check_quarantine_threshold depends on silver
-    assert tasks_by_key["check_quarantine_threshold"]["depends_on"][0]["task_key"] == "silver_transformation"
-    # quality_attention depends on check_quarantine_threshold with outcome: 'true'
-    qa_dep = tasks_by_key["quality_attention"]["depends_on"][0]
-    assert qa_dep["task_key"] == "check_quarantine_threshold"
-    assert qa_dep["outcome"] == "true"
 
     # gold and warehouse both depend on silver
     assert tasks_by_key["gold_analytics"]["depends_on"][0]["task_key"] == "silver_transformation"
@@ -148,7 +145,16 @@ def test_lakeflow_job_yaml_dependencies_and_run_if():
     fg_deps = {d["task_key"] for d in tasks_by_key["final_quality_gate"]["depends_on"]}
     assert fg_deps == {"gold_analytics", "dimensional_warehouse"}
 
-    # publish summary has run_if: ALL_DONE
+    # publish summary has run_if: ALL_DONE and depends on all upstream tasks
+    summary_deps = {d["task_key"] for d in tasks_by_key["publish_run_summary"]["depends_on"]}
+    assert summary_deps == {
+        "validate_landing_batch",
+        "bronze_ingestion",
+        "silver_transformation",
+        "gold_analytics",
+        "dimensional_warehouse",
+        "final_quality_gate",
+    }
     assert tasks_by_key["publish_run_summary"].get("run_if") == "ALL_DONE"
 
 
@@ -293,7 +299,14 @@ def test_failure_classification_mapping():
     """Test exception taxonomy mapping into operational categories."""
     assert classify_failure(WarehouseQualityGateError("Quality gate failed")) == FailureClassification.DATA_QUALITY
     assert classify_failure(ReconciliationError("Recon mismatch")) == FailureClassification.DATA_QUALITY
+    assert classify_failure(QuarantineThresholdExceededError("Quarantine rate exceeded")) == FailureClassification.DATA_QUALITY
+    assert classify_failure(SCD2TemporalOrderError("Out of order SCD2 timestamp")) == FailureClassification.DATA_QUALITY
     assert classify_failure(LandingBatchIncompleteError("Missing tables")) == FailureClassification.CONFIGURATION
+    assert classify_failure(LandingPathError("Malformed cloud landing path")) == FailureClassification.CONFIGURATION
+    assert classify_failure(LandingDiscoveryError("Cloud storage auth failed")) in (
+        FailureClassification.TRANSIENT,
+        FailureClassification.DEPENDENCY,
+    )
     assert classify_failure(FileNotFoundError("Missing blob")) == FailureClassification.TRANSIENT
     assert classify_failure(TimeoutError("Storage timeout")) == FailureClassification.TRANSIENT
     assert classify_failure(KeyError("missing_param")) == FailureClassification.CONFIGURATION
@@ -328,6 +341,18 @@ def test_retry_policy_execution_transient_vs_deterministic():
     with pytest.raises(WarehouseQualityGateError):
         execute_with_retry(dq_func, "dq_task", policy)
     assert dq_attempts == 1
+
+    # 3. Explicitly verify non-retryable errors: QuarantineThresholdExceededError, ReconciliationError,
+    # WarehouseQualityGateError, SCD2TemporalOrderError, LandingPathError
+    non_retryables = [
+        QuarantineThresholdExceededError("Rate exceeded"),
+        ReconciliationError("Silver discrepancy"),
+        WarehouseQualityGateError("Gate failed"),
+        SCD2TemporalOrderError("Order error"),
+        LandingPathError("Invalid path"),
+    ]
+    for exc in non_retryables:
+        assert policy.should_retry(exc, attempt=0) is False, f"Exception {exc} must not be retried"
 
 
 def test_resolve_failed_task_from_states_and_values():
@@ -691,3 +716,279 @@ def test_failed_job_run_audit_with_nullable_downstream_metrics(spark, tmp_path):
     assert row["failure_classification"] == "DATA_QUALITY"
     assert row["silver_valid_rows"] is None
     assert row["fact_sales_rows"] is None
+
+
+def test_operational_audit_same_run_merge_and_different_run_insert(spark, tmp_path):
+    """Verify that JobRunAudit MERGE updates the same run in-place and inserts distinct runs."""
+    audit_path = tmp_path / "job_run_audit_merge_test"
+    now = datetime(2026, 9, 1, 10, 0, 0, tzinfo=timezone.utc)
+
+    # 1. Initial write of run R
+    audit_r = JobRunAudit(
+        orchestration_run_id="orch-run-r",
+        databricks_job_id="retail_lakehouse_lakeflow_job",
+        databricks_job_run_id="dbr-run-r",
+        environment="dev",
+        ingestion_date="2026-08-31",
+        adf_run_id="adf-run-r",
+        started_at=now,
+        completed_at=now,
+        final_status="IN_PROGRESS",
+        duration_seconds=10.0,
+        landing_ready=True,
+        discovered_dataset_count=8,
+        bronze_rows_ingested=100,
+        silver_valid_rows=None,
+        silver_quarantine_rows=None,
+        gold_tables_generated=None,
+        fact_sales_rows=None,
+        quality_status="PENDING",
+    )
+    persist_job_run_audit(spark, audit_r, audit_path)
+
+    audit_df = spark.read.format("delta").load(str(audit_path))
+    assert audit_df.count() == 1
+    assert audit_df.collect()[0]["final_status"] == "IN_PROGRESS"
+
+    # 2. Re-write run R with SUCCESS and final metrics (retry of publish_run_summary)
+    audit_r_final = JobRunAudit(
+        orchestration_run_id="orch-run-r",
+        databricks_job_id="retail_lakehouse_lakeflow_job",
+        databricks_job_run_id="dbr-run-r",
+        environment="dev",
+        ingestion_date="2026-08-31",
+        adf_run_id="adf-run-r",
+        started_at=now,
+        completed_at=now,
+        final_status="SUCCESS",
+        duration_seconds=22.5,
+        landing_ready=True,
+        discovered_dataset_count=8,
+        bronze_rows_ingested=100,
+        silver_valid_rows=95,
+        silver_quarantine_rows=5,
+        gold_tables_generated=6,
+        fact_sales_rows=90,
+        quality_status="PASSED",
+        quarantine_rate=0.05,
+        quarantine_alert_triggered=False,
+    )
+    persist_job_run_audit(spark, audit_r_final, audit_path)
+
+    audit_df = spark.read.format("delta").load(str(audit_path))
+    # Count remains exactly 1 for the same run ID
+    assert audit_df.count() == 1
+    row = audit_df.collect()[0]
+    assert row["orchestration_run_id"] == "orch-run-r"
+    assert row["final_status"] == "SUCCESS"
+    assert row["silver_valid_rows"] == 95
+    assert row["duration_seconds"] == 22.5
+
+    # 3. Write different run R2 -> count becomes 2
+    audit_r2 = JobRunAudit(
+        orchestration_run_id="orch-run-r2",
+        databricks_job_id="retail_lakehouse_lakeflow_job",
+        databricks_job_run_id="dbr-run-r2",
+        environment="dev",
+        ingestion_date="2026-08-31",
+        adf_run_id="adf-run-r2",
+        started_at=now,
+        completed_at=now,
+        final_status="SUCCESS",
+        duration_seconds=30.0,
+        landing_ready=True,
+        discovered_dataset_count=8,
+        bronze_rows_ingested=200,
+        silver_valid_rows=190,
+        silver_quarantine_rows=10,
+        gold_tables_generated=6,
+        fact_sales_rows=180,
+        quality_status="PASSED",
+        quarantine_rate=0.05,
+        quarantine_alert_triggered=False,
+    )
+    persist_job_run_audit(spark, audit_r2, audit_path)
+
+    audit_df = spark.read.format("delta").load(str(audit_path))
+    assert audit_df.count() == 2
+
+
+def test_quarantine_threshold_semantics_below_equal_above(spark, tmp_path, monkeypatch):
+    """Test that rate < threshold and rate == threshold PASS, while rate > threshold raises QuarantineThresholdExceededError."""
+    def mock_process_silver_layer(*args, **kwargs):
+        return {
+            "customers": {"silver_valid": 95, "quarantine": 5},
+        }
+
+    monkeypatch.setattr("src.orchestration.tasks.run_silver.process_silver_layer", mock_process_silver_layer)
+
+    # 1. rate (0.05) < threshold (0.10) -> PASS
+    context_below = RunContext(
+        environment="test",
+        ingestion_date="2026-08-31",
+        adf_run_id="run-below",
+        landing_root=tmp_path / "landing",
+        delta_root=tmp_path / "delta",
+        quarantine_threshold_rate=0.10,
+    )
+    store_below = TaskValueStore()
+    res_below = execute_silver_task(spark, context_below, store_below)
+    assert res_below["quarantine_rate"] == 0.05
+    assert res_below["quarantine_alert_triggered"] is False
+    assert store_below.get("silver_transformation", "quarantine_rate") == 0.05
+    assert store_below.get("silver_transformation", "quarantine_alert_triggered") is False
+
+    # 2. rate (0.05) == threshold (0.05) -> PASS
+    context_equal = RunContext(
+        environment="test",
+        ingestion_date="2026-08-31",
+        adf_run_id="run-equal",
+        landing_root=tmp_path / "landing",
+        delta_root=tmp_path / "delta",
+        quarantine_threshold_rate=0.05,
+    )
+    store_equal = TaskValueStore()
+    res_equal = execute_silver_task(spark, context_equal, store_equal)
+    assert res_equal["quarantine_rate"] == 0.05
+    assert res_equal["quarantine_alert_triggered"] is False
+    assert store_equal.get("silver_transformation", "quarantine_rate") == 0.05
+    assert store_equal.get("silver_transformation", "quarantine_alert_triggered") is False
+
+    # 3. rate (0.05) > threshold (0.04) -> FAILS with QuarantineThresholdExceededError
+    context_above = RunContext(
+        environment="test",
+        ingestion_date="2026-08-31",
+        adf_run_id="run-above",
+        landing_root=tmp_path / "landing",
+        delta_root=tmp_path / "delta",
+        quarantine_threshold_rate=0.04,
+    )
+    store_above = TaskValueStore()
+    with pytest.raises(QuarantineThresholdExceededError) as exc_info:
+        execute_silver_task(spark, context_above, store_above)
+
+    assert "Silver Quarantine Gate FAILED" in str(exc_info.value)
+    # Ensure metrics were still recorded in TaskValueStore before raising
+    assert store_above.get("silver_transformation", "quarantine_rate") == 0.05
+    assert store_above.get("silver_transformation", "quarantine_alert_triggered") is True
+
+
+def test_downstream_tasks_skipped_on_threshold_failure_and_summary_runs(spark, tmp_path, monkeypatch):
+    """Verify that when silver raises QuarantineThresholdExceededError, downstream tasks are skipped and summary runs."""
+    context = RunContext(
+        environment="test",
+        ingestion_date="2026-08-31",
+        adf_run_id="run-thresh-skip",
+        landing_root=tmp_path / "landing",
+        delta_root=tmp_path / "delta",
+        quarantine_threshold_rate=0.02,
+    )
+
+    orchestrator = LakeflowLocalOrchestrator(context=context)
+
+    monkeypatch.setattr(
+        "src.orchestration.orchestrator.execute_validate_landing_task",
+        lambda *args, **kwargs: {"landing_ready": True, "discovered_dataset_count": 8},
+    )
+    monkeypatch.setattr(
+        "src.orchestration.orchestrator.execute_bronze_task",
+        lambda *args, **kwargs: {"bronze_rows_ingested": 100},
+    )
+
+    def mock_silver_fail(spark_session, ctx, task_values, *args, **kwargs):
+        task_values.set("silver_transformation", "quarantine_alert_triggered", True)
+        raise QuarantineThresholdExceededError("Quarantine rate 0.05 > 0.02")
+
+    monkeypatch.setattr("src.orchestration.orchestrator.execute_silver_task", mock_silver_fail)
+
+    audit = orchestrator.run(spark=spark)
+
+    # Silver failed
+    assert orchestrator.task_results["silver_transformation"].state == TaskState.FAILED
+    # Downstream tasks skipped
+    assert orchestrator.task_results["gold_analytics"].state == TaskState.SKIPPED
+    assert orchestrator.task_results["dimensional_warehouse"].state == TaskState.SKIPPED
+    assert orchestrator.task_results["final_quality_gate"].state == TaskState.SKIPPED
+    # Final summary executed (run_if: ALL_DONE semantics)
+    assert orchestrator.task_results["publish_run_summary"].state == TaskState.SUCCESS
+
+    assert audit.final_status == "FAILED"
+    assert audit.failure_task == "silver_transformation"
+    assert audit.failure_classification == "DATA_QUALITY"
+    assert audit.quarantine_alert_triggered is True
+
+
+def test_final_all_done_summary_executes_after_early_landing_failure(spark, tmp_path, monkeypatch):
+    """Verify that publish_run_summary executes under ALL_DONE semantics even after validate_landing_batch failure."""
+    context = RunContext(
+        environment="test",
+        ingestion_date="2026-08-31",
+        adf_run_id="run-landing-fail",
+        landing_root=tmp_path / "landing",
+        delta_root=tmp_path / "delta",
+    )
+
+    orchestrator = LakeflowLocalOrchestrator(context=context)
+
+    def mock_landing_fail(*args, **kwargs):
+        raise LandingBatchIncompleteError("Missing landing datasets")
+
+    monkeypatch.setattr("src.orchestration.orchestrator.execute_validate_landing_task", mock_landing_fail)
+
+    audit = orchestrator.run(spark=spark)
+
+    assert orchestrator.task_results["validate_landing_batch"].state == TaskState.FAILED
+    assert orchestrator.task_results["bronze_ingestion"].state == TaskState.SKIPPED
+    assert orchestrator.task_results["silver_transformation"].state == TaskState.SKIPPED
+    assert orchestrator.task_results["gold_analytics"].state == TaskState.SKIPPED
+    assert orchestrator.task_results["dimensional_warehouse"].state == TaskState.SKIPPED
+    assert orchestrator.task_results["final_quality_gate"].state == TaskState.SKIPPED
+    assert orchestrator.task_results["publish_run_summary"].state == TaskState.SUCCESS
+
+    assert audit.final_status == "FAILED"
+    assert audit.failure_task == "validate_landing_batch"
+    assert audit.failure_classification == "CONFIGURATION"
+
+
+def test_failed_summary_audit_remains_one_row_on_rerun(spark, tmp_path):
+    """Verify that rerun of a failed audit row merges into exactly one row."""
+    audit_path = tmp_path / "job_run_audit_failed_rerun"
+    now = datetime.now(timezone.utc)
+
+    failed_audit = JobRunAudit(
+        orchestration_run_id="orch-failed-rerun-01",
+        databricks_job_id="retail_lakehouse_lakeflow_job",
+        databricks_job_run_id="dbr-run-failed",
+        environment="dev",
+        ingestion_date="2026-08-31",
+        adf_run_id="adf-failed",
+        started_at=now,
+        completed_at=now,
+        final_status="FAILED",
+        duration_seconds=5.0,
+        landing_ready=False,
+        discovered_dataset_count=0,
+        bronze_rows_ingested=None,
+        silver_valid_rows=None,
+        silver_quarantine_rows=None,
+        gold_tables_generated=None,
+        fact_sales_rows=None,
+        quality_status="FAILED",
+        failure_task="validate_landing_batch",
+        failure_classification="CONFIGURATION",
+        error_message="LandingBatchIncompleteError: Missing datasets",
+    )
+
+    # First write
+    persist_job_run_audit(spark, failed_audit, audit_path)
+    audit_df = spark.read.format("delta").load(str(audit_path))
+    assert audit_df.count() == 1
+
+    # Second write (rerun/retry of summary task)
+    persist_job_run_audit(spark, failed_audit, audit_path)
+    audit_df = spark.read.format("delta").load(str(audit_path))
+    assert audit_df.count() == 1
+    row = audit_df.collect()[0]
+    assert row["orchestration_run_id"] == "orch-failed-rerun-01"
+    assert row["final_status"] == "FAILED"
+    assert row["failure_task"] == "validate_landing_batch"

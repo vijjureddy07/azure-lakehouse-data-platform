@@ -22,32 +22,33 @@ In modern Azure Databricks architecture, multi-task orchestration workflows are 
 
 ## 2. Multi-Task DAG Architecture
 
-Module 5 defines a production-grade multi-task Directed Acyclic Graph (DAG) with condition branching in [`databricks/jobs/retail_lakehouse_job.yml`](../databricks/jobs/retail_lakehouse_job.yml):
+Module 5 defines a multi-task Directed Acyclic Graph (DAG) in [`databricks/jobs/retail_lakehouse_job.yml`](../databricks/jobs/retail_lakehouse_job.yml):
 
 ```mermaid
 graph TD
     T1["1. validate_landing_batch<br/><i>(Prerequisite Check, native retries: 0)</i>"] --> T2["2. bronze_ingestion<br/><i>(Raw Delta Log, native retries: 1)</i>"]
-    T2 --> T3["3. silver_transformation<br/><i>(Conformance & Quarantine, native retries: 0)</i>"]
+    T2 --> T3["3. silver_transformation<br/><i>(Conformance & Quarantine Hard Gate, native retries: 0)</i>"]
     
-    T3 --> C1{"4. check_quarantine_threshold<br/><i>(Lakeflow condition_task)</i>"}
-    C1 -->|outcome: true| T4A["4A. quality_attention<br/><i>(Operational Alert Branch)</i>"]
+    T3 --> T4A["4A. gold_analytics<br/><i>(Analytical KPIs, native retries: 1)</i>"]
+    T3 --> T4B["4B. dimensional_warehouse<br/><i>(SCD1, SCD2, PIT Facts, EDQ, native retries: 0)</i>"]
     
-    T3 --> T5A["5A. gold_analytics<br/><i>(Analytical KPIs, native retries: 1)</i>"]
-    T3 --> T5B["5B. dimensional_warehouse<br/><i>(SCD1, SCD2, PIT Facts, EDQ, native retries: 0)</i>"]
+    T4A --> T5["5. final_quality_gate<br/><i>(Operational Validation, native retries: 0)</i>"]
+    T4B --> T5
     
-    T5A --> T6["6. final_quality_gate<br/><i>(Operational Validation, native retries: 0)</i>"]
-    T5B --> T6
-    T6 --> T7["7. publish_run_summary<br/><i>(run_if: ALL_DONE, sink: delta/operations/job_run_audit)</i>"]
+    T1 -.->|run_if: ALL_DONE| T6["6. publish_run_summary<br/><i>(sink: delta/operations/job_run_audit)</i>"]
+    T2 -.->|run_if: ALL_DONE| T6
+    T3 -.->|run_if: ALL_DONE| T6
+    T4A -.->|run_if: ALL_DONE| T6
+    T4B -.->|run_if: ALL_DONE| T6
+    T5 -.->|run_if: ALL_DONE| T6
 
     style T1 fill:#e1f5fe,stroke:#0288d1,stroke-width:2px;
     style T2 fill:#fff3e0,stroke:#f57c00,stroke-width:2px;
     style T3 fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px;
-    style C1 fill:#fffde7,stroke:#fbc02d,stroke-width:2px;
-    style T4A fill:#fff9c4,stroke:#f57f17,stroke-width:2px;
-    style T5A fill:#fffde7,stroke:#fbc02d,stroke-width:2px;
-    style T5B fill:#e8f5e9,stroke:#388e3c,stroke-width:2px;
-    style T6 fill:#e0f2f1,stroke:#00796b,stroke-width:2px;
-    style T7 fill:#eceff1,stroke:#455a64,stroke-width:2px;
+    style T4A fill:#fffde7,stroke:#fbc02d,stroke-width:2px;
+    style T4B fill:#e8f5e9,stroke:#388e3c,stroke-width:2px;
+    style T5 fill:#e0f2f1,stroke:#00796b,stroke-width:2px;
+    style T6 fill:#eceff1,stroke:#455a64,stroke-width:2px;
 ```
 
 ### Task Responsibilities & Execution Contracts
@@ -57,23 +58,14 @@ graph TD
 | `validate_landing_batch` | `notebook_task` | None | `ALL_SUCCESS` | 0 | 1 (Transient only) | 600s | `terminal_state`, `landing_ready`, `discovered_dataset_count`, `missing_dataset_count`, `ingestion_date`, `adf_run_id`, `landing_root` |
 | `bronze_ingestion` | `notebook_task` | `validate_landing_batch` | `ALL_SUCCESS` | 1 | 1 (Transient only) | 1200s | `terminal_state`, `bronze_rows_ingested`, `datasets_processed` |
 | `silver_transformation` | `notebook_task` | `bronze_ingestion` | `ALL_SUCCESS` | 0 | 1 (Transient only) | 1800s | `terminal_state`, `silver_valid_rows`, `silver_quarantine_rows`, `reconciliation_passed`, `quarantine_rate`, `quarantine_alert_triggered` |
-| `check_quarantine_threshold` | `condition_task` | `silver_transformation` | `ALL_SUCCESS` | 0 | 0 | - | Evaluates: `quarantine_alert_triggered == true` |
-| `quality_attention` | `notebook_task` | `check_quarantine_threshold` (`outcome: true`) | `ALL_SUCCESS` | 0 | 0 | 300s | `quality_attention_required`, `quarantine_alert_logged` |
 | `gold_analytics` | `notebook_task` | `silver_transformation` | `ALL_SUCCESS` | 1 | 1 (Transient only) | 1200s | `terminal_state`, `gold_tables_generated` |
 | `dimensional_warehouse` | `notebook_task` | `silver_transformation` | `ALL_SUCCESS` | 0 | 1 (Transient only) | 2400s | `terminal_state`, `fact_sales_rows`, `fact_returns_rows`, `warehouse_quality_passed` |
 | `final_quality_gate` | `notebook_task` | `gold_analytics`, `dimensional_warehouse` | `ALL_SUCCESS` | 0 | 0 | 600s | `terminal_state`, `final_quality_gate_passed`, `overall_quality_status` |
-| `publish_run_summary` | `notebook_task` | `final_quality_gate` | `ALL_DONE` | 1 | 0 | 300s | None (Persists `JobRunAudit` to Delta & registers UC) |
-
----
-
-## 3. Real Lakeflow Execution Contracts & Task Wrapper Notebooks
-
-To maintain a clean boundary between **Orchestration Behavior (Module 5)** and **Packaging/Build/CI/CD (Module 6)**, Lakeflow tasks are executed via thin Databricks task wrapper notebooks located in [`databricks/tasks/`](../databricks/tasks/):
+| `publish_run_summary` | `notebook_task` | All upstream tasks | `ALL_DONE` | 1 | 0 | 300s | None (Persists `JobRunAudit` to Delta & registers UC) |
 
 - `validate_landing.py`
 - `run_bronze.py`
 - `run_silver.py`
-- `quality_attention.py`
 - `run_gold.py`
 - `run_warehouse.py`
 - `final_quality_gate.py`
@@ -92,7 +84,7 @@ Each primary task wrapper notebook:
 ## 4. Landing Batch Completeness & Exact Batch Isolation
 
 ### 8-Dataset Completeness Requirement
-In production batch orchestration, `validate_landing_batch` verifies that all 8 required datasets exist matching both `ingestion_date` and `adf_run_id`:
+In batch orchestration, `validate_landing_batch` verifies that all 8 required datasets exist matching both `ingestion_date` and `adf_run_id`:
 - `customers`, `products`, `stores`, `employees`, `orders`, `order_items`, `payments`, `returns`.
 - If any required dataset is missing, it raises `LandingBatchIncompleteError` and aborts early before compute is consumed on Bronze ingestion.
 
@@ -104,23 +96,19 @@ Bronze ingestion accepts optional `ingestion_date` and `adf_run_id` filters. Whe
 
 ---
 
-## 5. Conditional Branching: Quarantine Warning vs. Critical Quality Failure
+## 5. Hard Data Quality Gate: Quarantine Threshold Policy
 
 ```
 ┌────────────────────────────────────────────────────────────────────────┐
-│                        ARCHITECTURAL DISTINCTION                       │
+│                        DATA QUALITY GATE POLICY                        │
 │                                                                        │
-│  QUARANTINE WARNING:                                                   │
-│  - Quarantine rate exceeds threshold (e.g. > 20%).                     │
-│  - Isolated bad records routed to quarantine. Conformed valid records  │
-│    remain mathematically reconciled (Bronze = Valid + Quarantine).     │
-│  - Triggers 'quality_attention' branch for operator notification.      │
-│  - Downstream Gold & Warehouse processing CONTINUES.                   │
-│                                                                        │
-│  CRITICAL DATA QUALITY FAILURE:                                        │
-│  - Broken mathematical reconciliation (ReconciliationError).           │
-│  - Broken surrogate key invariants (WarehouseQualityGateError).        │
-│  - Hard-fails the task immediately and aborts downstream execution.    │
+│  QUARANTINE THRESHOLD GATE:                                            │
+│  - Evaluated after Silver valid and quarantine tables are persisted.   │
+│  - If quarantine_rate <= threshold: PASSES (rate == threshold is PASS).│
+│  - If quarantine_rate > threshold: raises QuarantineThresholdExceeded. │
+│  - Classification: DATA_QUALITY (Zero Retries).                        │
+│  - Downstream Gold, Warehouse, and Final Quality tasks are SKIPPED.    │
+│  - publish_run_summary executes under run_if: ALL_DONE to log audit.   │
 └────────────────────────────────────────────────────────────────────────┘
 ```
 

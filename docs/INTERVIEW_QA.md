@@ -204,12 +204,11 @@ Every execution appends exactly one record to the `delta/operations/job_run_audi
 
 ---
 
-### Q38: How does conditional branching work in Lakeflow Jobs, and what is the architectural difference between a Quarantine Warning and a Critical Data Quality Failure?
+### Q38: How is the Quarantine Threshold enforced in Lakeflow Jobs, and what happens when it is exceeded?
 **Answer:**  
-- **Lakeflow Condition Task:** Configured using `condition_task` with an operator (e.g. `op: EQUAL_TO`, `left: "{{tasks.silver_transformation.values.quarantine_alert_triggered}}"`, `right: "true"`). Downstream tasks declare a dependency with `outcome: "true"` (e.g. `quality_attention` branch).
-- **Quarantine Warning vs. Critical Quality Failure:**
-  - *Quarantine Warning:* When the quarantine rate exceeds a warning threshold (e.g. >20%), the bad records are successfully isolated, and the conformed valid data still mathematically balances with Bronze. The pipeline executes the `quality_attention` task to alert on-call engineers, but downstream Gold & Warehouse workloads continue normally.
-  - *Critical Quality Failure:* If mathematical reconciliation fails (`bronze != valid + quarantine`) or referential integrity in fact tables is violated, the pipeline hard-fails immediately and aborts downstream processing.
+- **Hard Data Quality Gate:** After Silver data and quarantine outputs are safely persisted and mathematical reconciliation is verified, the pipeline evaluates the quarantine rate (`quarantine_quarantined / total_processed`).
+- **Policy Enforcement:** If `quarantine_rate <= threshold` (where `rate == threshold` is defined as a PASS), execution proceeds normally. If `quarantine_rate > threshold`, `QuarantineThresholdExceededError` is raised with failure classification `DATA_QUALITY`.
+- **Zero Retries & Downstream Impact:** Because this is a deterministic data quality failure, it has ZERO retries. Downstream tasks (`gold_analytics`, `dimensional_warehouse`, `final_quality_gate`) are SKIPPED, while `publish_run_summary` executes under `run_if: ALL_DONE` to durably log the failure audit.
 
 ---
 
@@ -220,7 +219,7 @@ Every execution appends exactly one record to the `delta/operations/job_run_audi
 
 ---
 
-## Production CI/CD, Bundles & Governed SQL Serving (Module 6 Focus)
+## CI/CD, Databricks Bundles & Governed SQL Serving (Module 6 Focus)
 
 ### Q40: What happens after a developer opens a Pull Request or merges to `main` in this repository?
 **Answer:**  

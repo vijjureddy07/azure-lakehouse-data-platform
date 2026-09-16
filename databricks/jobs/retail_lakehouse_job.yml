@@ -77,27 +77,7 @@ resources:
           timeout_seconds: 1800
           max_retries: 0
 
-        # Task 4: Conditional If/Else Check on Quarantine Rate
-        - task_key: check_quarantine_threshold
-          description: "Evaluates whether the Silver quarantine rate exceeded the configured warning threshold."
-          depends_on:
-            - task_key: silver_transformation
-          condition_task:
-            op: EQUAL_TO
-            left: "{{tasks.silver_transformation.values.quarantine_alert_triggered}}"
-            right: "true"
-
-        # Task 5A: Quality Attention Branch (Executes when condition == true)
-        - task_key: quality_attention
-          description: "Logs non-fatal operational warnings when quarantine rate exceeds threshold without halting pipeline."
-          depends_on:
-            - task_key: check_quarantine_threshold
-              outcome: "true"
-          notebook_task:
-            notebook_path: "databricks/tasks/quality_attention.py"
-          timeout_seconds: 300
-
-        # Task 5B: Gold Analytical KPIs (Parallel branch with Warehouse)
+        # Task 4A: Gold Analytical KPIs (Parallel branch with Warehouse)
         - task_key: gold_analytics
           description: "Computes business analytical KPIs and aggregates for reporting dashboards."
           depends_on:
@@ -108,7 +88,7 @@ resources:
           max_retries: 1
           min_retry_interval_millis: 15000
 
-        # Task 5C: Kimball Dimensional Warehouse (Parallel branch with Gold)
+        # Task 4B: Kimball Dimensional Warehouse (Parallel branch with Gold)
         - task_key: dimensional_warehouse
           description: "Executes Kimball star schema modeling (dim_customer SCD2, dim_product SCD1, PIT fact_sales) and enterprise quality gates."
           depends_on:
@@ -118,7 +98,7 @@ resources:
           timeout_seconds: 2400
           max_retries: 0
 
-        # Task 6: Final Operational Quality Gate
+        # Task 5: Final Operational Quality Gate
         - task_key: final_quality_gate
           description: "Verifies high-level operational quality criteria and reconciliation results across all upstream layers."
           depends_on:
@@ -129,10 +109,15 @@ resources:
           timeout_seconds: 600
           max_retries: 0
 
-        # Task 7: Publish Operational Run Summary (Runs on SUCCESS or FAILURE)
+        # Task 6: Publish Operational Run Summary (Runs on SUCCESS or FAILURE)
         - task_key: publish_run_summary
           description: "Compiles operational metrics and persists an audit row to delta/operations/job_run_audit under all conditions."
           depends_on:
+            - task_key: validate_landing_batch
+            - task_key: bronze_ingestion
+            - task_key: silver_transformation
+            - task_key: gold_analytics
+            - task_key: dimensional_warehouse
             - task_key: final_quality_gate
           run_if: ALL_DONE
           notebook_task:

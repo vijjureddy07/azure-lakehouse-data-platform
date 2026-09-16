@@ -11,6 +11,7 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from delta.tables import DeltaTable
 from pyspark.sql.types import (
     BooleanType,
     DoubleType,
@@ -61,7 +62,11 @@ def persist_job_run_audit(
     audit_path: Path | str,
 ) -> None:
     """
-    Append an operational job run audit record to the Delta audit table.
+    Persist or update an operational job run audit record in the Delta audit table.
+
+    Uses Delta MERGE keyed on orchestration_run_id to guarantee idempotency:
+    re-running or repairing a run summary updates the single logical audit row
+    rather than appending duplicate records.
 
     Args:
         spark: Active SparkSession.
@@ -96,8 +101,17 @@ def persist_job_run_audit(
     )]
 
     df = spark.createDataFrame(record, schema=OPERATIONAL_AUDIT_SCHEMA)
-    df.write.format("delta").mode("append").save(path_str)
-    logger.info("Persisted operational audit record for run '%s' to %s", audit.orchestration_run_id, path_str)
+
+    if DeltaTable.isDeltaTable(spark, path_str):
+        delta_audit = DeltaTable.forPath(spark, path_str)
+        delta_audit.alias("target").merge(
+            df.alias("source"),
+            "target.orchestration_run_id = source.orchestration_run_id",
+        ).whenMatchedUpdateAll().whenNotMatchedInsertAll().execute()
+        logger.info("Upserted operational audit record for run '%s' in %s", audit.orchestration_run_id, path_str)
+    else:
+        df.write.format("delta").mode("append").save(path_str)
+        logger.info("Created operational audit table with run '%s' at %s", audit.orchestration_run_id, path_str)
 
 
 def format_run_summary(audit: JobRunAudit) -> str:

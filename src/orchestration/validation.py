@@ -49,7 +49,6 @@ REQUIRED_TASK_KEYS = [
     "validate_landing_batch",
     "bronze_ingestion",
     "silver_transformation",
-    "check_quarantine_threshold",
     "gold_analytics",
     "dimensional_warehouse",
     "final_quality_gate",

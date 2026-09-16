@@ -159,10 +159,21 @@ def process_dim_customer_scd2(
         )
         return spark.read.format("delta").load(path_str)
 
-    # --- CASE 2: INCREMENTAL / SCD2 MERGE PROCESSING ---
+    # --- CASE 2: INCREMENTAL / SCD2 ATOMIC MERGE PROCESSING ---
     existing_dim = spark.read.format("delta").load(path_str)
     max_key_val = existing_dim.select(spark_max(col("customer_key"))).collect()[0][0]
     max_existing_key = int(max_key_val) if max_key_val is not None else 0
+
+    # Historical summary per customer: max version and count of active records
+    customer_history = (
+        existing_dim
+        .groupBy("customer_id")
+        .agg(
+            spark_max("version_number").alias("hist_max_version"),
+            spark_max("effective_from").alias("hist_max_eff_from"),
+        )
+        .withColumnRenamed("customer_id", "hist_customer_id")
+    )
 
     current_active = existing_dim.filter(col("is_current") == lit(True)).select(
         col("customer_id").alias("cur_customer_id"),
@@ -171,38 +182,37 @@ def process_dim_customer_scd2(
         col("effective_from").alias("cur_effective_from"),
     )
 
-    # Join incoming with current active dimension records
-    joined = incoming_hashed.join(
-        current_active,
-        incoming_hashed.customer_id == current_active.cur_customer_id,
-        how="left",
+    # Join incoming with existing active and historical customer records
+    joined = (
+        incoming_hashed
+        .join(current_active, incoming_hashed.customer_id == current_active.cur_customer_id, how="left")
+        .join(customer_history, incoming_hashed.customer_id == customer_history.hist_customer_id, how="left")
     )
 
-    # 1. Genuinely new customers (never seen before in dim_customer)
-    new_customers_df = (
-        joined
-        .filter(col("cur_customer_id").isNull())
-        .drop("cur_customer_id", "cur_attribute_hash", "prev_version", "cur_effective_from")
+    # 1. Genuinely new customers (never seen before in dim_customer history)
+    new_customers_df = joined.filter(col("hist_max_version").isNull())
+
+    # 2. Customers with existing active record and changed attributes
+    changed_customers_df = joined.filter(
+        col("cur_customer_id").isNotNull()
+        & (col("cur_attribute_hash") != col("attribute_hash"))
     )
 
-    # 2. Changed customers (active record exists but tracked attribute_hash differs)
-    changed_customers_df = (
-        joined
-        .filter(
-            col("cur_customer_id").isNotNull()
-            & (col("cur_attribute_hash") != col("attribute_hash"))
-        )
-        .drop("cur_customer_id", "cur_attribute_hash")
+    # 3. Orphan historical customers missing an active version (partial-state recovery)
+    recovering_customers_df = joined.filter(
+        col("cur_customer_id").isNull()
+        & col("hist_max_version").isNotNull()
     )
 
     new_count = new_customers_df.count()
     changed_count = changed_customers_df.count()
+    recovery_count = recovering_customers_df.count()
 
-    if new_count == 0 and changed_count == 0:
-        logger.info("dim_customer SCD2: No new or changed records detected. Table is up to date.")
+    if new_count == 0 and changed_count == 0 and recovery_count == 0:
+        logger.info("dim_customer SCD2: No new, changed, or recovering records detected. Table is up to date.")
         return spark.read.format("delta").load(path_str)
 
-    # Validation: Prevent out-of-order SCD2 mutations BEFORE modifying Delta table
+    # Temporal integrity check: Prevent out-of-order SCD2 mutations BEFORE modifying Delta table
     if changed_count > 0:
         invalid_orders = changed_customers_df.filter(
             col("cur_effective_from") >= lit(now_ts).cast(TimestampType())
@@ -216,67 +226,100 @@ def process_dim_customer_scd2(
                 f"effective_from ({bad_eff})."
             )
 
-    logger.info("dim_customer SCD2: Processing %d new customers and %d changed customers", new_count, changed_count)
+    logger.info(
+        "dim_customer SCD2: Processing %d new, %d changed, %d state-recovery customers",
+        new_count,
+        changed_count,
+        recovery_count,
+    )
 
-    # Step A: Prepare and materialize new version rows BEFORE modifying the Delta table
-    new_rows_list = []
+    insert_dfs = []
+    running_key_offset = max_existing_key
+
+    # Prepare genuinely new customer rows (version 1)
     if new_count > 0:
-        new_cust_win = Window.orderBy("customer_id")
-        new_cust_rows = (
+        w_new = Window.orderBy("customer_id")
+        new_rows = (
             new_customers_df
-            .withColumn("customer_key", (row_number().over(new_cust_win) + lit(max_existing_key)).cast(IntegerType()))
-            .withColumn(
-                "effective_from",
-                lit(now_ts).cast(TimestampType()),
-            )
+            .withColumn("customer_key", (row_number().over(w_new) + lit(running_key_offset)).cast(IntegerType()))
+            .withColumn("effective_from", lit(now_ts).cast(TimestampType()))
             .withColumn("effective_to", lit(None).cast(TimestampType()))
             .withColumn("is_current", lit(True).cast(BooleanType()))
             .withColumn("version_number", lit(1).cast(IntegerType()))
-            .select(*DIM_CUSTOMER_COLS)
+            .withColumn("merge_key", lit(None).cast(StringType()))
+            .select("merge_key", *DIM_CUSTOMER_COLS)
         )
-        new_rows_list.append(new_cust_rows)
+        insert_dfs.append(new_rows)
+        running_key_offset += new_count
 
+    # Prepare changed customer new version rows (prev_version + 1)
     if changed_count > 0:
-        new_key_offset = max_existing_key + new_count
-        changed_win = Window.orderBy("customer_id")
-        changed_new_rows = (
+        w_chg = Window.orderBy("customer_id")
+        changed_rows = (
             changed_customers_df
-            .withColumn("customer_key", (row_number().over(changed_win) + lit(new_key_offset)).cast(IntegerType()))
+            .withColumn("customer_key", (row_number().over(w_chg) + lit(running_key_offset)).cast(IntegerType()))
             .withColumn("effective_from", lit(now_ts).cast(TimestampType()))
             .withColumn("effective_to", lit(None).cast(TimestampType()))
             .withColumn("is_current", lit(True).cast(BooleanType()))
             .withColumn("version_number", (col("prev_version") + lit(1)).cast(IntegerType()))
-            .select(*DIM_CUSTOMER_COLS)
+            .withColumn("merge_key", lit(None).cast(StringType()))
+            .select("merge_key", *DIM_CUSTOMER_COLS)
         )
-        new_rows_list.append(changed_new_rows)
+        insert_dfs.append(changed_rows)
+        running_key_offset += changed_count
 
-    materialized_rows = []
-    if new_rows_list:
-        combined_df = new_rows_list[0]
-        for additional_df in new_rows_list[1:]:
-            combined_df = combined_df.unionByName(additional_df)
-        materialized_rows = combined_df.collect()
+    # Prepare state-recovery customer new active rows (hist_max_version + 1)
+    if recovery_count > 0:
+        w_rec = Window.orderBy("customer_id")
+        recovery_rows = (
+            recovering_customers_df
+            .withColumn("customer_key", (row_number().over(w_rec) + lit(running_key_offset)).cast(IntegerType()))
+            .withColumn("effective_from", lit(now_ts).cast(TimestampType()))
+            .withColumn("effective_to", lit(None).cast(TimestampType()))
+            .withColumn("is_current", lit(True).cast(BooleanType()))
+            .withColumn("version_number", (col("hist_max_version") + lit(1)).cast(IntegerType()))
+            .withColumn("merge_key", lit(None).cast(StringType()))
+            .select("merge_key", *DIM_CUSTOMER_COLS)
+        )
+        insert_dfs.append(recovery_rows)
 
-    # Step B: Expire changed current active records in Delta table
+    # Prepare expiration update rows for changed customers
+    expire_df = None
     if changed_count > 0:
-        changed_ids = [row["customer_id"] for row in changed_customers_df.select("customer_id").distinct().collect()]
-        changed_ids_df = spark.createDataFrame([(cid,) for cid in changed_ids], ["customer_id"])
-        delta_tbl = DeltaTable.forPath(spark, path_str)
-        delta_tbl.alias("target").merge(
-            changed_ids_df.alias("source"),
-            "target.customer_id = source.customer_id AND target.is_current = true",
-        ).whenMatchedUpdate(
-            set={
-                "effective_to": f"cast('{now_ts.isoformat()}' as timestamp)",
-                "is_current": "false",
-            }
-        ).execute()
+        expire_df = (
+            changed_customers_df
+            .withColumn("merge_key", col("customer_id"))
+            .withColumn("customer_key", lit(None).cast(IntegerType()))
+            .withColumn("effective_from", lit(None).cast(TimestampType()))
+            .withColumn("effective_to", lit(now_ts).cast(TimestampType()))
+            .withColumn("is_current", lit(False).cast(BooleanType()))
+            .withColumn("version_number", lit(None).cast(IntegerType()))
+            .select("merge_key", *DIM_CUSTOMER_COLS)
+        )
 
-    # Step C: Append materialized new rows
-    if materialized_rows:
-        target_schema = existing_dim.select(*DIM_CUSTOMER_COLS).schema
-        insert_df = spark.createDataFrame(materialized_rows, schema=target_schema)
-        insert_df.write.format("delta").mode("append").save(path_str)
-        logger.info("dim_customer SCD2: Appended %d new version records to %s", len(materialized_rows), path_str)
+    # Combine all staged actions into a single DataFrame
+    all_staged = insert_dfs
+    if expire_df is not None:
+        all_staged.append(expire_df)
 
+    combined_staged_df = all_staged[0]
+    for adf in all_staged[1:]:
+        combined_staged_df = combined_staged_df.unionByName(adf)
+
+    # Execute single atomic Delta MERGE
+    delta_tbl = DeltaTable.forPath(spark, path_str)
+    delta_tbl.alias("target").merge(
+        combined_staged_df.alias("source"),
+        "target.customer_id = source.merge_key AND target.is_current = true",
+    ).whenMatchedUpdate(
+        set={
+            "effective_to": "source.effective_to",
+            "is_current": "false",
+        }
+    ).whenNotMatchedInsert(
+        condition="source.merge_key IS NULL",
+        values={c: f"source.{c}" for c in DIM_CUSTOMER_COLS},
+    ).execute()
+
+    logger.info("dim_customer SCD2: Atomic Delta MERGE completed successfully.")
     return spark.read.format("delta").load(path_str)

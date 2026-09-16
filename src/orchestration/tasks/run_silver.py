@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 
 from src.medallion.silver import process_silver_layer
 from src.orchestration.models import RunContext, TaskValueStore
+from src.orchestration.reliability import QuarantineThresholdExceededError
 
 if TYPE_CHECKING:
     from pyspark.sql import SparkSession
@@ -33,6 +34,9 @@ def execute_silver_task(
         - reconciliation_passed (bool)
         - quarantine_rate (float)
         - quarantine_alert_triggered (bool)
+
+    Raises:
+        QuarantineThresholdExceededError: If quarantine rate exceeds configured threshold.
     """
     logger.info("Executing Silver Layer Conformance for run: %s", context.orchestration_run_id)
 
@@ -55,6 +59,7 @@ def execute_silver_task(
     quarantine_rate = (total_quarantine / total_processed) if total_processed > 0 else 0.0
     alert_triggered = quarantine_rate > context.quarantine_threshold_rate
 
+    # Publish task values prior to evaluating gate
     task_values.set("silver_transformation", "silver_valid_rows", total_valid)
     task_values.set("silver_transformation", "silver_quarantine_rows", total_quarantine)
     task_values.set("silver_transformation", "reconciliation_passed", True)
@@ -62,12 +67,14 @@ def execute_silver_task(
     task_values.set("silver_transformation", "quarantine_alert_triggered", alert_triggered)
 
     if alert_triggered:
-        logger.warning(
-            "QUARANTINE ALERT: Quarantine rate %.2f%% exceeded threshold %.2f%% (%d quarantined rows)",
-            quarantine_rate * 100,
-            context.quarantine_threshold_rate * 100,
-            total_quarantine,
+        error_msg = (
+            f"Silver Quarantine Gate FAILED: Quarantine rate {quarantine_rate:.4f} ({quarantine_rate*100:.2f}%) "
+            f"exceeded configured threshold {context.quarantine_threshold_rate:.4f} "
+            f"({total_quarantine} quarantined rows / {total_processed} total processed). "
+            f"Halting pipeline before Gold/Warehouse publication."
         )
+        logger.error(error_msg)
+        raise QuarantineThresholdExceededError(error_msg)
 
     logger.info(
         "Silver Layer complete: %d valid rows, %d quarantined rows (Reconciliation PASSED)",
@@ -80,5 +87,5 @@ def execute_silver_task(
         "silver_quarantine_rows": total_quarantine,
         "reconciliation_passed": True,
         "quarantine_rate": quarantine_rate,
-        "quarantine_alert_triggered": alert_triggered,
+        "quarantine_alert_triggered": False,
     }

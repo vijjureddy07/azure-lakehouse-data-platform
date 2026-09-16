@@ -21,6 +21,7 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 
 import pytest
+from delta.tables import DeltaTable
 from pyspark.sql.functions import lit
 from pyspark.sql.types import (
     BooleanType,
@@ -785,5 +786,169 @@ def test_scd_type1_null_safe_attribute_transition(spark, tmp_path):
     row = dim_v2.collect()[0]
     assert row["product_key"] == 1  # Key preserved
     assert row["subcategory"] == "Hardware"  # Updated in-place!
+
+
+def test_scd2_unchanged_retry_remains_unchanged(spark, tmp_path):
+    """
+    Mandatory Test 11: Re-running unchanged customer batch creates zero new versions.
+    """
+    table_path = tmp_path / "dim_cust_unchanged"
+    cols = ["customer_id", "first_name", "last_name", "email", "phone", "address", "city", "state", "postal_code", "country", "signup_date", "loyalty_tier"]
+    data = [("C-1", "John", "Doe", "j@e.com", "555", "10 Elm", "City", "ST", "11111", "US", date(2025, 1, 1), "BRONZE")]
+    df = spark.createDataFrame(data, cols)
+
+    t0 = datetime(2026, 1, 1, 10, 0, 0)
+    process_dim_customer_scd2(spark, df, table_path, batch_timestamp=t0)
+    assert spark.read.format("delta").load(str(table_path)).count() == 1
+
+    # Rerun unchanged at t1
+    t1 = datetime(2026, 1, 2, 10, 0, 0)
+    process_dim_customer_scd2(spark, df, table_path, batch_timestamp=t1)
+    dim_after = spark.read.format("delta").load(str(table_path))
+    assert dim_after.count() == 1, "Unchanged rerun must create zero new versions"
+    assert dim_after.collect()[0]["version_number"] == 1
+
+
+def test_scd2_same_changed_batch_retry_produces_one_new_version_only(spark, tmp_path):
+    """
+    Mandatory Test 12: Retrying the same changed batch produces exactly one new version, not duplicates.
+    """
+    table_path = tmp_path / "dim_cust_retry_batch"
+    cols = ["customer_id", "first_name", "last_name", "email", "phone", "address", "city", "state", "postal_code", "country", "signup_date", "loyalty_tier"]
+
+    # Version 1
+    t0 = datetime(2026, 1, 1, 10, 0, 0)
+    df_v1 = spark.createDataFrame([("C-1", "John", "Doe", "j@e.com", "555", "10 Elm", "City", "ST", "11111", "US", date(2025, 1, 1), "BRONZE")], cols)
+    process_dim_customer_scd2(spark, df_v1, table_path, batch_timestamp=t0)
+
+    # Changed batch applied at t1 (BRONZE -> GOLD)
+    t1 = datetime(2026, 1, 2, 10, 0, 0)
+    df_v2 = spark.createDataFrame([("C-1", "John", "Doe", "j@e.com", "555", "10 Elm", "City", "ST", "11111", "US", date(2025, 1, 1), "GOLD")], cols)
+    process_dim_customer_scd2(spark, df_v2, table_path, batch_timestamp=t1)
+
+    dim_v2 = spark.read.format("delta").load(str(table_path))
+    assert dim_v2.count() == 2  # Version 1 (expired) + Version 2 (current)
+
+    # Retry the exact same changed batch at t1
+    process_dim_customer_scd2(spark, df_v2, table_path, batch_timestamp=t1)
+    dim_retry = spark.read.format("delta").load(str(table_path))
+    assert dim_retry.count() == 2, "Retrying same changed batch must not create a third duplicate version"
+    assert dim_retry.filter(dim_retry.is_current == True).count() == 1  # noqa: E712
+
+
+def test_scd2_partial_state_recovery(spark, tmp_path):
+    """
+    Mandatory Test 13: If a customer has zero current rows (e.g. from an interrupted/partial mutation),
+    re-running repair mode restores a valid current active record.
+    """
+    table_path = tmp_path / "dim_cust_recovery"
+    cols = ["customer_id", "first_name", "last_name", "email", "phone", "address", "city", "state", "postal_code", "country", "signup_date", "loyalty_tier"]
+
+    # Initial state
+    t0 = datetime(2026, 1, 1, 10, 0, 0)
+    df_init = spark.createDataFrame([("C-99", "Bob", "Smith", "b@e.com", "555", "20 Oak", "City", "ST", "22222", "US", date(2025, 1, 1), "BRONZE")], cols)
+    process_dim_customer_scd2(spark, df_init, table_path, batch_timestamp=t0)
+
+    # Manually simulate a broken partial state: expire active record without inserting replacement
+    delta_tbl = DeltaTable.forPath(spark, str(table_path))
+    delta_tbl.update("customer_id = 'C-99'", {"is_current": "false", "effective_to": "cast('2026-01-02 10:00:00' as timestamp)"})
+
+    broken_dim = spark.read.format("delta").load(str(table_path))
+    assert broken_dim.filter(broken_dim.is_current == True).count() == 0  # noqa: E712
+
+    # Rerun with incoming data at t2 -> recovery logic must repair active row
+    t2 = datetime(2026, 1, 3, 10, 0, 0)
+    df_incoming = spark.createDataFrame([("C-99", "Bob", "Smith", "b@e.com", "555", "20 Oak", "City", "ST", "22222", "US", date(2025, 1, 1), "PLATINUM")], cols)
+    repaired_dim = process_dim_customer_scd2(spark, df_incoming, table_path, batch_timestamp=t2)
+
+    active_rows = repaired_dim.filter(repaired_dim.is_current == True).collect()  # noqa: E712
+    assert len(active_rows) == 1, "Recovery must ensure exactly one active current row is restored"
+    assert active_rows[0]["customer_id"] == "C-99"
+    assert active_rows[0]["loyalty_tier"] == "PLATINUM"
+    assert active_rows[0]["version_number"] == 2
+
+
+def test_scd2_exactly_one_current_row_invariant(spark, tmp_path):
+    """
+    Mandatory Test 14: Invariant verification. Across multiple customers and batch mutations,
+    every customer has at most one current row at all times.
+    """
+    table_path = tmp_path / "dim_cust_invariant"
+    cols = ["customer_id", "first_name", "last_name", "email", "phone", "address", "city", "state", "postal_code", "country", "signup_date", "loyalty_tier"]
+
+    # Initial load: 3 customers
+    t0 = datetime(2026, 1, 1, 10, 0, 0)
+    df0 = spark.createDataFrame([
+        ("C-1", "Alice", "A", "a@e.com", "111", "1 St", "Town", "ST", "10001", "US", date(2025, 1, 1), "BRONZE"),
+        ("C-2", "Bob", "B", "b@e.com", "222", "2 St", "Town", "ST", "10002", "US", date(2025, 1, 1), "SILVER"),
+        ("C-3", "Carol", "C", "c@e.com", "333", "3 St", "Town", "ST", "10003", "US", date(2025, 1, 1), "GOLD"),
+    ], cols)
+    process_dim_customer_scd2(spark, df0, table_path, batch_timestamp=t0)
+
+    # Mutation 1: update C-1 and C-2
+    t1 = datetime(2026, 2, 1, 10, 0, 0)
+    df1 = spark.createDataFrame([
+        ("C-1", "Alice", "A", "a@e.com", "111", "1 St", "Town", "ST", "10001", "US", date(2025, 1, 1), "SILVER"),
+        ("C-2", "Bob", "B", "b@e.com", "222", "20 New St", "Town", "ST", "10002", "US", date(2025, 1, 1), "GOLD"),
+    ], cols)
+    process_dim_customer_scd2(spark, df1, table_path, batch_timestamp=t1)
+
+    # Mutation 2: update C-1 again and add C-4
+    t2 = datetime(2026, 3, 1, 10, 0, 0)
+    df2 = spark.createDataFrame([
+        ("C-1", "Alice", "A", "a@e.com", "111", "1 St", "Town", "ST", "10001", "US", date(2025, 1, 1), "PLATINUM"),
+        ("C-4", "Dave", "D", "d@e.com", "444", "4 St", "Town", "ST", "10004", "US", date(2025, 2, 1), "BRONZE"),
+    ], cols)
+    final_dim = process_dim_customer_scd2(spark, df2, table_path, batch_timestamp=t2)
+
+    # Check invariant: exactly one is_current = True per customer_id
+    current_df = final_dim.filter(final_dim.is_current == True)  # noqa: E712
+    counts_by_cust = current_df.groupBy("customer_id").count().collect()
+    for row in counts_by_cust:
+        assert row["count"] == 1, f"Customer {row['customer_id']} has {row['count']} active records; must be exactly 1"
+
+
+def test_scd2_no_interval_overlaps(spark, tmp_path):
+    """
+    Mandatory Test 17: Half-open interval contiguous timeline with no overlapping ranges.
+    For each customer, v1.effective_to == v2.effective_from, and active record has effective_to IS NULL.
+    """
+    table_path = tmp_path / "dim_cust_intervals"
+    cols = ["customer_id", "first_name", "last_name", "email", "phone", "address", "city", "state", "postal_code", "country", "signup_date", "loyalty_tier"]
+
+    t0 = datetime(2026, 1, 1, 10, 0, 0, tzinfo=timezone.utc)
+    t1 = datetime(2026, 2, 1, 10, 0, 0, tzinfo=timezone.utc)
+    t2 = datetime(2026, 3, 1, 10, 0, 0, tzinfo=timezone.utc)
+
+    # v1
+    df0 = spark.createDataFrame([("C-1", "Alice", "A", "a@e.com", "111", "1 St", "City", "ST", "10001", "US", date(2025, 1, 1), "BRONZE")], cols)
+    process_dim_customer_scd2(spark, df0, table_path, batch_timestamp=t0)
+
+    # v2
+    df1 = spark.createDataFrame([("C-1", "Alice", "A", "a@e.com", "111", "1 St", "City", "ST", "10001", "US", date(2025, 1, 1), "SILVER")], cols)
+    process_dim_customer_scd2(spark, df1, table_path, batch_timestamp=t1)
+
+    # v3
+    df2 = spark.createDataFrame([("C-1", "Alice", "A", "a@e.com", "111", "1 St", "City", "ST", "10001", "US", date(2025, 1, 1), "GOLD")], cols)
+    final_dim = process_dim_customer_scd2(spark, df2, table_path, batch_timestamp=t2)
+
+    rows = final_dim.filter(final_dim.customer_id == "C-1").orderBy("version_number").collect()
+    assert len(rows) == 3
+
+    # Check intervals
+    assert rows[0]["version_number"] == 1
+    assert rows[0]["is_current"] is False
+    assert rows[0]["effective_to"] == rows[1]["effective_from"]
+
+    assert rows[1]["version_number"] == 2
+    assert rows[1]["is_current"] is False
+    assert rows[1]["effective_to"] == rows[2]["effective_from"]
+
+    assert rows[2]["version_number"] == 3
+    assert rows[2]["is_current"] is True
+    assert rows[2]["effective_to"] is None
+
+    # Strictly contiguous and increasing
+    assert rows[0]["effective_from"] < rows[1]["effective_from"] < rows[2]["effective_from"]
 
 

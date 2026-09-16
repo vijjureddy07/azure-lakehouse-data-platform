@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from delta.tables import DeltaTable
-from pyspark.sql.functions import lit
+from pyspark.sql.functions import col, lit
 
 from src.medallion.discovery import (
     LandingFileInfo,
@@ -54,8 +54,13 @@ def ingest_file_to_bronze(
     """
     Read a single landing file as raw strings and append lineage metadata columns.
 
-    For JSON files: Uses standard JSON Lines (newline-delimited JSON) reading without multiLine.
-    For CSV files: Preserves header and prevents schema inference.
+    Lineage columns appended:
+    - _ingestion_id: Deterministic immutable source file identifier
+    - _source_file: Base filename
+    - _source_path: Full landing path
+    - _ingestion_date: ADF partition date
+    - _adf_run_id: Pipeline execution RunId
+    - _ingested_timestamp: Databricks processing timestamp (UTC)
     """
     path_str = file_info.source_path
 
@@ -69,7 +74,8 @@ def ingest_file_to_bronze(
     # Attach lineage metadata columns
     now_ts = datetime.now(timezone.utc)
     bronze_df = (
-        df.withColumn("_source_file", lit(file_info.file_name))
+        df.withColumn("_ingestion_id", lit(file_info.ingestion_id))
+        .withColumn("_source_file", lit(file_info.file_name))
         .withColumn("_source_path", lit(path_str))
         .withColumn("_ingestion_date", lit(file_info.ingestion_date))
         .withColumn("_adf_run_id", lit(file_info.adf_run_id))
@@ -91,17 +97,10 @@ def ingest_bronze_layer(
     """
     Discover all pending landing files and ingest them into Bronze Delta tables.
 
-    Args:
-        spark: Active SparkSession.
-        landing_root: Root landing directory or cloud URI.
-        bronze_root: Root Bronze Delta directory.
-        datasets: Optional list of datasets to process (defaults to all 8).
-        force_all: If True, reprocesses files already tracked in _ingestion_audit.
-        ingestion_date: Optional batch date filter for precise orchestration runs.
-        adf_run_id: Optional ADF pipeline RunId filter for batch isolation.
-
-    Returns:
-        dict[str, int]: Ingested row count per dataset.
+    Achieves crash-safe idempotency via deterministic _ingestion_id. If a crash
+    occurs after writing Bronze rows but before recording the audit log, a subsequent
+    retry inspects the target Bronze Delta table, suppresses duplicate row appends,
+    and idempotently repairs the missing audit log entry.
     """
     target_datasets = datasets or DATASETS
     bronze_root_str = str(bronze_root).rstrip("/")
@@ -136,7 +135,32 @@ def ingest_bronze_layer(
         ds_bronze_path = f"{bronze_root_str}/{ds}"
         total_rows = 0
 
+        # Inspect target Bronze Delta table for existing ingestion IDs (crash-recovery check)
+        existing_ingestion_ids: set[str] = set()
+        if DeltaTable.isDeltaTable(spark, ds_bronze_path):
+            existing_df = spark.read.format("delta").load(ds_bronze_path)
+            if "_ingestion_id" in existing_df.columns:
+                target_ids = [f.ingestion_id for f in file_list if f.ingestion_id]
+                if target_ids:
+                    matches = (
+                        existing_df.filter(col("_ingestion_id").isin(target_ids))
+                        .select("_ingestion_id")
+                        .distinct()
+                        .collect()
+                    )
+                    existing_ingestion_ids = {r["_ingestion_id"] for r in matches}
+
         for file_info in file_list:
+            if file_info.ingestion_id in existing_ingestion_ids:
+                logger.info(
+                    "Bronze crash-recovery: rows for _ingestion_id=%s already exist in %s. "
+                    "Skipping duplicate row append and queuing for audit repair.",
+                    file_info.ingestion_id,
+                    ds,
+                )
+                successfully_ingested_files.append(file_info)
+                continue
+
             logger.info("Ingesting %s from %s into Bronze", ds, file_info.source_path)
             raw_bronze_df = ingest_file_to_bronze(spark, file_info)
             count = raw_bronze_df.count()
@@ -149,7 +173,7 @@ def ingest_bronze_layer(
         ingested_counts[ds] = total_rows
         logger.info("Bronze table %s updated (+%d rows)", ds, total_rows)
 
-    # Record in audit log
+    # Record in audit log via Delta MERGE
     if successfully_ingested_files:
         record_ingested_files(spark, successfully_ingested_files, audit_table_path, status="SUCCESS")
 
